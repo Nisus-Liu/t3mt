@@ -700,3 +700,84 @@ def toggle_task(task_id):
         
     except Exception as e:
         return jsonify({'code': 500, 'message': f'更新状态失败: {str(e)}'})
+
+
+# ========== 仿油猴子模块 API ==========
+
+@video_bp.route('/monkey/parse', methods=['POST'])
+def monkey_parse():
+    """测试仿油猴子解析接口"""
+    try:
+        from services.monkey.parsers import ALL_PARSERS
+        from services.monkey.monkey_downloader import MonkeyDownloader
+        
+        data = request.get_json()
+        url = data.get('url', '').strip()
+        
+        if not url:
+            return jsonify({'code': 400, 'message': '请输入视频地址'})
+        
+        # 尝试解析
+        parsers = [p() for p in ALL_PARSERS]
+        for parser in parsers:
+            if not parser.available:
+                continue
+            
+            success, result = parser.parse(url)
+            if success:
+                return jsonify({
+                    'code': 200,
+                    'message': '解析成功',
+                    'data': {
+                        'success': True,
+                        'parser': parser.name,
+                        'm3u8_url': result[:100] + '...' if len(result) > 100 else result,
+                        'url': url
+                    }
+                })
+        
+        return jsonify({
+            'code': 500,
+            'message': '所有解析器均失败',
+            'data': {'success': False}
+        })
+        
+    except Exception as e:
+        return jsonify({'code': 500, 'message': f'解析异常: {str(e)}'})
+
+
+@video_bp.route('/monkey/download', methods=['POST'])
+def monkey_download():
+    """使用仿油猴子方式下载视频"""
+    try:
+        from services.monkey.monkey_downloader import MonkeyDownloader
+        
+        data = request.get_json()
+        url = data.get('url', '').strip()
+        output_path = data.get('output_path', '').strip()
+        
+        if not url:
+            return jsonify({'code': 400, 'message': '请输入视频地址'})
+        
+        if not output_path:
+            return jsonify({'code': 400, 'message': '请指定输出路径'})
+        
+        # 创建下载器并执行
+        downloader = MonkeyDownloader(concurrency=12)
+        success, result = downloader.download(url, output_path)
+        
+        if success:
+            return jsonify({
+                'code': 200,
+                'message': '下载成功',
+                'data': {'success': True, 'output': result}
+            })
+        else:
+            return jsonify({
+                'code': 500,
+                'message': f'下载失败: {result}',
+                'data': {'success': False}
+            })
+            
+    except Exception as e:
+        return jsonify({'code': 500, 'message': f'下载异常: {str(e)}'})
