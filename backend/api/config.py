@@ -74,6 +74,11 @@ def get_config():
                 # 用户自定义接口配置
                 'apis': ConfigModel.get_config_list('video_parse_apis') or []
             },
+            'monkey': {
+                'enabled': ConfigModel.get_config('monkey_enabled', 'false') == 'true',
+                'concurrency': int(ConfigModel.get_config('monkey_concurrency', 12)),
+                'apis': ConfigModel.get_config_list('monkey_apis') or []
+            },
             'video_download': {
                 'retry_count': int(ConfigModel.get_config('video_download_retry_count', 3)),
                 'timeout': int(ConfigModel.get_config('video_download_timeout', 30)),
@@ -168,7 +173,15 @@ def save_config():
             # 保存用户自定义接口配置
             if 'apis' in video_parse_config:
                 ConfigModel.set_config_list('video_parse_apis', video_parse_config['apis'], 'video_parse')
-        
+
+        # 保存仿油猴子模块配置
+        if 'monkey' in data:
+            monkey_config = data['monkey']
+            ConfigModel.set_config('monkey_enabled', 'true' if monkey_config.get('enabled') else 'false', 'monkey')
+            ConfigModel.set_config('monkey_concurrency', str(monkey_config.get('concurrency', 12)), 'monkey')
+            if 'apis' in monkey_config:
+                ConfigModel.set_config_list('monkey_apis', monkey_config['apis'], 'monkey')
+
         # 保存影视下载配置
         if 'video_download' in data:
             video_download_config = data['video_download']

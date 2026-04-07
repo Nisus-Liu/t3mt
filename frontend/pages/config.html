@@ -772,6 +772,32 @@
     </div>
 </div>
 
+<!-- 仿油猴子模块配置 -->
+<div class="config-section" id="monkeySection">
+    <h3 class="section-title">仿油猴子解析</h3>
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" id="monkeyEnabled" onchange="saveMonkeyConfig()" style="width: 16px; height: 16px;">
+            <span style="font-size: 14px;">启用仿油猴子解析</span>
+        </label>
+    </div>
+    <div style="font-size: 12px; color: #666; margin-bottom: 12px; line-height: 1.5;">
+        仿油猴子视频解析脚本方式，无需Cookie，覆盖更多视频资源。解析接口可增删，第一个失败自动尝试下一个。
+    </div>
+    <div id="monkeyApisList" class="parse-api-list"></div>
+    <div style="display: flex; gap: 8px; margin-top: 8px;">
+        <button class="btn" onclick="addMonkeyApi()" style="height: 28px; padding: 0 12px; font-size: 13px;">+ 添加接口</button>
+        <button class="btn" onclick="testMonkeyApi()" style="height: 28px; padding: 0 12px; font-size: 13px;">测试解析</button>
+    </div>
+    <div class="form-row" style="margin-top: 12px;">
+        <div class="form-row-label">并发下载数</div>
+        <div class="form-row-content">
+            <input type="number" class="form-input" id="monkeyConcurrency" value="12" min="1" max="32" style="width: 80px;" onchange="saveMonkeyConfig()">
+            <span style="margin-left: 8px; color: #999; font-size: 13px;">1-32，建议12-16</span>
+        </div>
+    </div>
+</div>
+
 <div class="config-section">
     <h3 class="section-title">视频平台Cookie配置</h3>
     <div class="cookie-tabs">
@@ -1028,11 +1054,16 @@
             data.video_parse?.apis || [],
             data.video_parse?.default_api  // 传入默认接口
         );
-        
+
         // 加载Cookie配置
         platformCookies = data.video_parse?.cookies || {};
         renderCookieTabs();
-        
+
+        // 仿油猴子配置
+        if (data.monkey) {
+            loadMonkeyConfig(data.monkey);
+        }
+
         // 影视下载配置
         document.getElementById('videoDownloadDefaultDir').value = data.video_download?.default_dir || '/vol2/1000/媒体库/video/官网下载';
         document.getElementById('videoDownloadTempDir').value = data.video_download?.temp_dir || '/vol2/1000/媒体库/video/temp';
@@ -1613,7 +1644,150 @@
         
         return apis;
     }
-    
+
+    // ========== 仿油猴子配置 ==========
+    let monkeyApis = [];
+
+    function renderMonkeyApis(apis) {
+        const container = document.getElementById('monkeyApisList');
+        if (!container) return;
+
+        // 默认接口
+        const defaultApi = {
+            name: '789解析',
+            api_url: 'https://jiexi.789jiexi.icu:4433/api.php',
+            enabled: true
+        };
+
+        const allApis = apis && apis.length > 0 ? apis : [defaultApi];
+        monkeyApis = allApis;
+
+        container.innerHTML = allApis.map((api, index) => {
+            const isDefault = api.is_default === true;
+            return `
+                <div class="parse-api-item" data-index="${index}" ${isDefault ? 'data-is-default="true"' : ''}>
+                    <input type="checkbox" class="parse-api-enabled" ${api.enabled !== false ? 'checked' : ''} onchange="saveMonkeyConfig()">
+                    <span class="parse-api-index">${index + 1}</span>
+                    <div class="parse-api-fields">
+                        <div class="parse-api-field" style="flex: 1;">
+                            <input type="text" class="form-input" placeholder="接口名称，如：789解析" value="${api.name || ''}" onchange="saveMonkeyConfig()">
+                        </div>
+                        <div class="parse-api-field" style="flex: 2;">
+                            <input type="text" class="form-input" placeholder="接口地址" value="${api.api_url || ''}" onchange="saveMonkeyConfig()">
+                        </div>
+                        ${isDefault ? '<span style="color:#999;font-size:12px;padding:0 8px;">(默认接口，不可删除)</span>' : `<button class="parse-api-remove" onclick="removeMonkeyApi(${index})">删除</button>`}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function addMonkeyApi() {
+        const container = document.getElementById('monkeyApisList');
+        const items = container.querySelectorAll('.parse-api-item');
+        const newIndex = items.length;
+
+        const div = document.createElement('div');
+        div.className = 'parse-api-item';
+        div.dataset.index = newIndex;
+        div.innerHTML = `
+            <input type="checkbox" class="parse-api-enabled" checked onchange="saveMonkeyConfig()">
+            <span class="parse-api-index">${newIndex + 1}</span>
+            <div class="parse-api-fields">
+                <div class="parse-api-field" style="flex: 1;">
+                    <input type="text" class="form-input" placeholder="接口名称" value="" onchange="saveMonkeyConfig()">
+                </div>
+                <div class="parse-api-field" style="flex: 2;">
+                    <input type="text" class="form-input" placeholder="接口地址" value="" onchange="saveMonkeyConfig()">
+                </div>
+                <button class="parse-api-remove" onclick="removeMonkeyApi(${newIndex})">删除</button>
+            </div>
+        `;
+        container.appendChild(div);
+        saveMonkeyConfig();
+    }
+
+    function removeMonkeyApi(index) {
+        const container = document.getElementById('monkeyApisList');
+        const items = container.querySelectorAll('.parse-api-item:not([data-is-default="true"])');
+        if (items.length <= 1) {
+            Message.warning('至少保留一个解析接口');
+            return;
+        }
+        const item = container.querySelector(`.parse-api-item[data-index="${index}"]:not([data-is-default="true"])`);
+        if (item) {
+            item.remove();
+            // 重新编号
+            container.querySelectorAll('.parse-api-item').forEach((el, i) => {
+                el.dataset.index = i;
+                const label = el.querySelector('.parse-api-index');
+                if (label) label.textContent = i + 1;
+            });
+            saveMonkeyConfig();
+        }
+    }
+
+    function saveMonkeyConfig() {
+        const container = document.getElementById('monkeyApisList');
+        if (!container) return;
+
+        const enabled = document.getElementById('monkeyEnabled')?.checked || false;
+        const concurrency = parseInt(document.getElementById('monkeyConcurrency')?.value) || 12;
+
+        const items = container.querySelectorAll('.parse-api-item');
+        const apis = [];
+        items.forEach(item => {
+            const inputs = item.querySelectorAll('.form-input');
+            const nameInput = inputs[0];
+            const urlInput = inputs[1];
+            if (urlInput && urlInput.value.trim()) {
+                apis.push({
+                    name: nameInput ? nameInput.value.trim() : '',
+                    api_url: urlInput.value.trim(),
+                    enabled: item.querySelector('.parse-api-enabled')?.checked !== false,
+                    is_default: item.dataset.isDefault === 'true'
+                });
+            }
+        });
+
+        // 保存到全局配置
+        if (!window._appConfig) window._appConfig = {};
+        if (!window._appConfig.monkey) window._appConfig.monkey = {};
+        window._appConfig.monkey.enabled = enabled;
+        window._appConfig.monkey.concurrency = concurrency;
+        window._appConfig.monkey.apis = apis;
+
+        // 标记需要保存
+        document.getElementById('configSaveBtn').dataset.modified = 'true';
+    }
+
+    function loadMonkeyConfig(data) {
+        if (!data) return;
+        const enabled = document.getElementById('monkeyEnabled');
+        const concurrency = document.getElementById('monkeyConcurrency');
+        if (enabled) enabled.checked = data.enabled || false;
+        if (concurrency) concurrency.value = data.concurrency || 12;
+        renderMonkeyApis(data.apis || []);
+    }
+
+    async function testMonkeyApi() {
+        const testUrl = prompt('请输入测试视频地址（腾讯视频）:', 'https://v.qq.com/x/cover/mzc00200djsz2lc/q4101o26e9l.html');
+        if (!testUrl) return;
+
+        try {
+            Message.info('正在测试仿油猴子解析...');
+            const result = await API.post('/api/video/monkey/parse', { url: testUrl });
+
+            if (result.code === 200 && result.data?.success) {
+                Message.success(`解析成功！使用接口: ${result.data.parser}`);
+            } else {
+                Message.error(result.message || '解析失败');
+            }
+        } catch (e) {
+            Message.error('测试异常: ' + e.message);
+        }
+    }
+
     // 测试影视解析配置
     async function testVideoParseConfig() {
         const testUrl = prompt('请输入测试地址（芒果TV剧集地址）:', 'https://www.mgtv.com/b/752667/23933212.html');
@@ -1699,6 +1873,28 @@
             video_parse: {
                 apis: getVideoParseApis(),
                 cookies: platformCookies
+            },
+            monkey: {
+                enabled: document.getElementById('monkeyEnabled')?.checked || false,
+                concurrency: parseInt(document.getElementById('monkeyConcurrency')?.value) || 12,
+                apis: (function() {
+                    const container = document.getElementById('monkeyApisList');
+                    if (!container) return [];
+                    const items = container.querySelectorAll('.parse-api-item');
+                    const apis = [];
+                    items.forEach(item => {
+                        const inputs = item.querySelectorAll('.form-input');
+                        if (inputs.length >= 2 && inputs[1].value.trim()) {
+                            apis.push({
+                                name: inputs[0] ? inputs[0].value.trim() : '',
+                                api_url: inputs[1].value.trim(),
+                                enabled: item.querySelector('.parse-api-enabled')?.checked !== false,
+                                is_default: item.dataset.isDefault === 'true'
+                            });
+                        }
+                    });
+                    return apis;
+                })()
             },
             video_download: {
                 default_dir: document.getElementById('videoDownloadDefaultDir').value,

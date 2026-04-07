@@ -453,6 +453,15 @@
                     </div>
                     <div class="form-hint" id="urlHint">输入芒果TV影视剧官网地址，点击"读取"按钮获取剧集信息</div>
                 </div>
+
+                <div class="form-group">
+                    <label class="form-label">下载模块</label>
+                    <select class="form-input" id="downloadModule" onchange="onDownloadModuleChange()">
+                        <option value="default">默认（t3mt）</option>
+                        <option value="monkey">仿油猴子</option>
+                    </select>
+                    <div class="form-hint" id="downloadModuleHint">仿油猴子无需Cookie，但部分视频可能解析失败</div>
+                </div>
                 
                 <div class="form-group">
                     <label class="form-label">任务名称 <span class="required">*</span></label>
@@ -614,7 +623,28 @@
         episodeData = [];
         currentVideoInfo = {};
     }
-    
+
+    // 下载模块切换处理（全局函数）
+    window.onDownloadModuleChange = function() {
+        const module = document.getElementById('downloadModule').value;
+        const urlHint = document.getElementById('downloadModuleHint');
+        const urlInput = document.getElementById('websiteUrl');
+        const btnRead = document.getElementById('btnRead');
+
+        if (module === 'monkey') {
+            urlHint.textContent = '仿油猴子模式：无需Cookie，但部分视频可能解析失败';
+            // 清空已读取的数据
+            document.getElementById('videoInfoGroup').style.display = 'none';
+            document.getElementById('episodeListGroup').style.display = 'none';
+            episodeData = [];
+            currentVideoInfo = {};
+        } else {
+            urlHint.textContent = '输入芒果TV影视剧官网地址，点击"读取"按钮获取剧集信息';
+            // 恢复默认提示
+            onPlatformChange();
+        }
+    }
+
     // 更新保存目录（全局函数）
     window.updateSaveDirectoryPreview = function() {
         const saveDirectoryInput = document.getElementById('saveDirectory');
@@ -1543,7 +1573,8 @@
         const createSubfolder = false;  // 强制设置为false
         const cronExpression = document.getElementById('cronExpression').value;
         const platform = document.getElementById('platformSelect').value;
-        
+        const downloadModule = document.getElementById('downloadModule').value;
+
         if (!name) {
             Message.warning('请输入任务名称');
             return;
@@ -1593,7 +1624,8 @@
                 selected_episodes: selectedIndices,  // 保存选中的剧集索引
                 video_info: currentVideoInfo,
                 platform: platform,  // 保存平台信息
-                video_type: videoType  // 保存影视类型
+                video_type: videoType,  // 保存影视类型
+                download_module: downloadModule  // 下载模块：default 或 monkey
             };
             
             let result;
