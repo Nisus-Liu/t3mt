@@ -1155,15 +1155,8 @@ def monkey_download():
             
     except Exception as e:
         return jsonify({'code': 500, 'message': f'下载异常: {str(e)}'})
-=======
 @video_bp.route('/task/<int:task_id>/clear-failures', methods=['POST'])
-def clear_task_failures(task_id):
-    """清除任务的失败记录"""
-    try:
-        from services.retry_manager import retry_manager
-        
-        task = VideoTask.get_by_id(task_id)
-        if not task:
+
 @video_bp.route('/task/<int:task_id>/clear-failures', methods=['POST'])
 def clear_task_failures(task_id):
     """清除任务的失败记录"""
