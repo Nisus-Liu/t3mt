@@ -87,10 +87,12 @@ def get_executions():
         task_type = request.args.get('task_type')  # transfer 或 download 或 video
         task_id = request.args.get('task_id')  # 任务ID
         task_name = request.args.get('task_name')  # 任务名称模糊搜索
+        cloud_type = request.args.get('cloud_type')  # 云盘类型筛选（quark 或 cloud189）
         start_date = request.args.get('start_date')
         end_date = request.args.get('end_date')
         status = request.args.get('status')
         schedule_date = request.args.get('schedule_date')  # 账期日期筛选 YYYYMMDD
+        schedule_period_start = request.args.get('schedule_period_start')  # 账期开始日期 YYYYMMDD（用于时间范围筛选）
         show_duplicates = request.args.get('show_duplicates', 'false').lower() == 'true'  # 是否查看重复
         page = int(request.args.get('page', 1))
         page_size = int(request.args.get('page_size', 20))
@@ -115,6 +117,12 @@ def get_executions():
                 conditions.append('task_name LIKE ?')
                 params.append(f'%{task_name}%')
             
+            if cloud_type:
+                # 根据cloud_type筛选任务
+                # 需要关联对应的任务表获取cloud_type
+                conditions.append('cloud_type = ?')
+                params.append(cloud_type)
+            
             if start_date:
                 conditions.append('DATE(start_time) >= ?')
                 params.append(start_date)
@@ -138,6 +146,11 @@ def get_executions():
                 # 按账期日期筛选（YYYYMMDD）
                 conditions.append('schedule_period LIKE ?')
                 params.append(f'{schedule_date}%')
+            
+            if schedule_period_start:
+                # 按账期开始日期筛选（YYYYMMDD），用于时间范围筛选
+                conditions.append('schedule_period >= ?')
+                params.append(schedule_period_start)
             
             where_clause = ' AND '.join(conditions) if conditions else '1=1'
             
@@ -228,19 +241,35 @@ def get_executions():
             for execution in executions:
                 execution['logs'] = parse_logs(execution.get('logs'))
                 
-                # 如果是影视下载任务，获取平台信息
-                if execution.get('task_type') == 'video':
-                    try:
-                        cursor.execute('''
-                            SELECT platform FROM video_tasks WHERE id = ?
-                        ''', (execution['task_id'],))
-                        video_task = cursor.fetchone()
-                        if video_task:
-                            execution['platform'] = video_task['platform']
-                        else:
-                            execution['platform'] = 'mango'  # 默认值
-                    except Exception as e:
-                        logger.warning(f"获取影视任务平台信息失败: {e}")
+                # 获取任务的cloud_type信息
+                try:
+                    task_type_val = execution.get('task_type')
+                    task_id_val = execution.get('task_id')
+                    
+                    if task_type_val == 'transfer':
+                        cursor.execute('SELECT cloud_type FROM transfer_tasks WHERE id = ?', (task_id_val,))
+                    elif task_type_val == 'download':
+                        cursor.execute('SELECT cloud_type FROM download_tasks WHERE id = ?', (task_id_val,))
+                    elif task_type_val == 'video':
+                        cursor.execute('SELECT cloud_type, platform FROM video_tasks WHERE id = ?', (task_id_val,))
+                    else:
+                        continue
+                    
+                    task_row = cursor.fetchone()
+                    if task_row:
+                        # 将sqlite3.Row转换为字典
+                        task_dict = dict(task_row)
+                        execution['cloud_type'] = task_dict.get('cloud_type', 'quark')
+                        if task_type_val == 'video':
+                            execution['platform'] = task_dict.get('platform', 'mango')
+                    else:
+                        execution['cloud_type'] = 'quark'  # 默认值
+                        if task_type_val == 'video':
+                            execution['platform'] = 'mango'
+                except Exception as e:
+                    logger.warning(f"获取任务cloud_type信息失败: {e}")
+                    execution['cloud_type'] = 'quark'
+                    if execution.get('task_type') == 'video':
                         execution['platform'] = 'mango'
             
             return jsonify({
@@ -263,7 +292,7 @@ def get_executions():
 
 @monitor_bp.route('/execution/<int:execution_id>', methods=['GET'])
 def get_execution_detail(execution_id):
-    """获取任务执行详情"""
+    """获取任务执行详情(优先获取实时日志)"""
     try:
         with get_db() as conn:
             cursor = conn.cursor()
@@ -283,8 +312,60 @@ def get_execution_detail(execution_id):
             # 转换为字典
             execution_dict = dict(execution)
             
-            # 解析logs字段（支持JSON和纯文本格式）
-            execution_dict['logs'] = parse_logs(execution_dict.get('logs'))
+            # 优先从内存获取实时日志(如果任务正在执行)
+            task_id = execution_dict.get('task_id')
+            task_type = execution_dict.get('task_type')
+            
+            real_time_logs = None
+            if task_type == 'download':
+                # 尝试从TaskExecutor获取实时日志
+                from services.task_executor import TaskExecutor
+                task_status = TaskExecutor.get_task_status(task_id)
+                if task_status and task_status.get('execution_id') == execution_id:
+                    real_time_logs = task_status.get('logs', [])
+                    # logger.info(f"从内存获取实时日志: execution_id={execution_id}, 日志数量={len(real_time_logs)}")
+            
+            # 如果有实时日志,使用实时日志;否则从数据库解析
+            if real_time_logs:
+                execution_dict['logs'] = real_time_logs
+                execution_dict['is_real_time'] = True  # 标记为实时日志
+            else:
+                execution_dict['logs'] = parse_logs(execution_dict.get('logs'))
+                execution_dict['is_real_time'] = False
+            
+            # 获取任务的cloud_type信息
+            try:
+                task_type_val = execution_dict.get('task_type')
+                task_id_val = execution_dict.get('task_id')
+                
+                if task_type_val == 'transfer':
+                    cursor.execute('SELECT cloud_type FROM transfer_tasks WHERE id = ?', (task_id_val,))
+                elif task_type_val == 'download':
+                    cursor.execute('SELECT cloud_type FROM download_tasks WHERE id = ?', (task_id_val,))
+                elif task_type_val == 'video':
+                    cursor.execute('SELECT cloud_type, platform FROM video_tasks WHERE id = ?', (task_id_val,))
+                else:
+                    execution_dict['cloud_type'] = 'quark'
+                    return jsonify({
+                        'code': 200,
+                        'message': 'success',
+                        'data': execution_dict
+                    })
+                
+                task_row = cursor.fetchone()
+                if task_row:
+                    execution_dict['cloud_type'] = task_row['cloud_type']
+                    if task_type_val == 'video':
+                        execution_dict['platform'] = task_row.get('platform', 'mango')
+                else:
+                    execution_dict['cloud_type'] = 'quark'
+                    if task_type_val == 'video':
+                        execution_dict['platform'] = 'mango'
+            except Exception as e:
+                logger.warning(f"获取任务cloud_type信息失败: {e}")
+                execution_dict['cloud_type'] = 'quark'
+                if task_type_val == 'video':
+                    execution_dict['platform'] = 'mango'
             
             return jsonify({
                 'code': 200,
@@ -335,30 +416,48 @@ def stop_execution(execution_id):
             
             # 根据任务类型终止
             if task_type == 'download':
-                # 终止下载任务
+                # 终止下载任务 - 需要判断是天翼云盘还是夸克网盘
                 from services.task_executor import TaskExecutor
-                if TaskExecutor.stop_task(task_id):
-                    # 更新执行记录状态为已终止
-                    from datetime import datetime
-                    cursor.execute("""
-                        UPDATE task_execution_history 
-                        SET status = 'failed', 
-                            end_time = ?,
-                            error_message = '任务已被手动终止'
-                        WHERE id = ?
-                    """, (datetime.now(), execution_id))
-                    conn.commit()
-                    
-                    logger.info(f"下载任务已终止: {task_name}")
-                    return jsonify({
-                        'code': 200,
-                        'message': '任务已终止'
-                    })
+                from datetime import datetime
+                
+                # 获取任务的cloud_type
+                cursor.execute('SELECT cloud_type FROM download_tasks WHERE id = ?', (task_id,))
+                task_row = cursor.fetchone()
+                cloud_type = task_row['cloud_type'] if task_row else 'quark'
+                
+                logger.info(f"下载任务cloud_type: {cloud_type}")
+                
+                stopped_in_memory = False
+                
+                if cloud_type == 'cloud189':
+                    # 天翼云盘：使用Aria2适配器，调用stop_aria2_task
+                    stopped_in_memory = TaskExecutor.stop_aria2_task(task_id)
+                    if stopped_in_memory:
+                        logger.info(f"天翼云盘Aria2任务已终止: {task_name}")
+                    else:
+                        logger.info(f"天翼云盘Aria2任务已终止(仅数据库,任务可能已完成): {task_name}")
                 else:
-                    return jsonify({
-                        'code': 400,
-                        'message': '任务未在运行中'
-                    }), 400
+                    # 夸克网盘：使用传统方式，调用stop_task
+                    stopped_in_memory = TaskExecutor.stop_task(task_id)
+                    if stopped_in_memory:
+                        logger.info(f"夸克网盘下载任务已终止(内存+数据库): {task_name}")
+                    else:
+                        logger.info(f"夸克网盘下载任务已终止(仅数据库,任务可能已完成): {task_name}")
+                
+                # 无论任务是否在内存中,都更新数据库状态
+                cursor.execute("""
+                    UPDATE task_execution_history 
+                    SET status = 'failed', 
+                        end_time = ?,
+                        error_message = '任务已被手动终止'
+                    WHERE id = ?
+                """, (datetime.now(), execution_id))
+                conn.commit()
+                
+                return jsonify({
+                    'code': 200,
+                    'message': '任务已终止'
+                })
                     
             elif task_type == 'transfer':
                 # 转存任务通过HTTP同步请求执行，无法直接终止
@@ -425,9 +524,8 @@ def stop_execution(execution_id):
                 """, (datetime.now(), new_logs, execution_id))
                 conn.commit()
                 
-                # 更新任务状态
-                from models.video_task import VideoTask
-                VideoTask.update(task_id, status='idle')
+                # 影视下载任务终止时不修改任务状态
+                # 任务状态只能通过"发布/下线"按钮修改
                 
                 logger.info(f"影视下载任务已标记为终止: {task_name}")
                 return jsonify({
@@ -522,6 +620,11 @@ def retry_execution(execution_id):
                     
             elif task_type == 'download':
                 # 调用下载任务执行
+                # 先强制清除任务状态
+                from services.task_executor import TaskExecutor
+                TaskExecutor.force_clear_task(task_id)
+                logger.info(f"已清除下载任务 {task_id} 的状态")
+                
                 # 下载任务会自己创建执行记录
                 import requests
                 response = requests.post(
@@ -680,4 +783,254 @@ def force_execute(execution_id):
         return jsonify({
             'code': 500,
             'message': f'执行失败: {str(e)}'
+        }), 500
+
+
+@monitor_bp.route('/executions/batch-delete', methods=['POST'])
+def batch_delete_executions():
+    """批量删除非执行中的任务记录"""
+    try:
+        # 获取要删除的任务ID列表
+        data = request.get_json()
+        execution_ids = data.get('execution_ids', [])
+        
+        if not execution_ids:
+            return jsonify({
+                'code': 400,
+                'message': '请选择要删除的任务'
+            }), 400
+        
+        if not isinstance(execution_ids, list):
+            return jsonify({
+                'code': 400,
+                'message': '参数格式错误'
+            }), 400
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # 检查是否有正在执行的任务
+            placeholders = ','.join(['?' for _ in execution_ids])
+            cursor.execute(f'''
+                SELECT id, task_name, status FROM task_execution_history
+                WHERE id IN ({placeholders}) AND status = 'running'
+            ''', execution_ids)
+            
+            running_tasks = cursor.fetchall()
+            
+            if running_tasks:
+                running_names = [task['task_name'] for task in running_tasks]
+                return jsonify({
+                    'code': 400,
+                    'message': f'无法删除正在执行的任务: {", ".join(running_names)}'
+                }), 400
+            
+            # 删除任务记录（包括日志）
+            cursor.execute(f'''
+                DELETE FROM task_execution_history
+                WHERE id IN ({placeholders})
+            ''', execution_ids)
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            logger.info(f"批量删除任务记录成功: 删除了 {deleted_count} 条记录")
+            
+            return jsonify({
+                'code': 200,
+                'message': f'成功删除 {deleted_count} 条任务记录',
+                'data': {
+                    'deleted_count': deleted_count
+                }
+            })
+            
+    except Exception as e:
+        logger.error(f"批量删除任务记录失败: {e}", exc_info=True)
+        return jsonify({
+            'code': 500,
+            'message': f'删除失败: {str(e)}'
+        }), 500
+
+
+@monitor_bp.route('/statistics', methods=['GET'])
+def get_statistics():
+    """获取任务执行统计信息"""
+    try:
+        # 获取查询参数
+        task_type = request.args.get('task_type')  # transfer 或 download 或 video
+        cloud_type = request.args.get('cloud_type')  # quark 或 cloud189
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # 构建查询条件
+            conditions = []
+            params = []
+            
+            if task_type:
+                conditions.append('teh.task_type = ?')
+                params.append(task_type)
+            
+            if start_date:
+                conditions.append('DATE(teh.start_time) >= ?')
+                params.append(start_date)
+            
+            if end_date:
+                conditions.append('DATE(teh.start_time) <= ?')
+                params.append(end_date)
+            
+            where_clause = ' AND '.join(conditions) if conditions else '1=1'
+            
+            # 根据任务类型构建JOIN子句
+            join_clause = ''
+            cloud_type_field = 'NULL'
+            
+            if task_type == 'transfer':
+                join_clause = 'LEFT JOIN transfer_tasks tt ON teh.task_id = tt.id'
+                cloud_type_field = 'tt.cloud_type'
+            elif task_type == 'download':
+                join_clause = 'LEFT JOIN download_tasks dt ON teh.task_id = dt.id'
+                cloud_type_field = 'dt.cloud_type'
+            elif task_type == 'video':
+                join_clause = 'LEFT JOIN video_tasks vt ON teh.task_id = vt.id'
+                cloud_type_field = 'vt.cloud_type'
+            
+            # 如果指定了cloud_type，添加过滤条件
+            if cloud_type and join_clause:
+                where_clause += f' AND {cloud_type_field} = ?'
+                params.append(cloud_type)
+            
+            # 查询总体统计
+            if join_clause:
+                cursor.execute(f'''
+                    SELECT 
+                        COUNT(*) as total_count,
+                        SUM(CASE WHEN teh.status = 'success' THEN 1 ELSE 0 END) as success_count,
+                        SUM(CASE WHEN teh.status = 'failed' THEN 1 ELSE 0 END) as failed_count,
+                        SUM(CASE WHEN teh.status = 'running' THEN 1 ELSE 0 END) as running_count,
+                        SUM(CASE WHEN teh.status = 'pending' THEN 1 ELSE 0 END) as pending_count
+                    FROM task_execution_history teh
+                    {join_clause}
+                    WHERE {where_clause}
+                ''', params)
+            else:
+                cursor.execute(f'''
+                    SELECT 
+                        COUNT(*) as total_count,
+                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_count,
+                        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running_count,
+                        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count
+                    FROM task_execution_history
+                    WHERE {where_clause}
+                ''', params)
+            
+            overall = dict(cursor.fetchone())
+            
+            # 计算成功率
+            total = overall['total_count'] or 0
+            success = overall['success_count'] or 0
+            overall['success_rate'] = round(success / total * 100, 2) if total > 0 else 0
+            
+            # 按云盘类型分组统计（如果有JOIN）
+            by_cloud_type = []
+            if join_clause and not cloud_type:  # 只有在未指定cloud_type时才分组统计
+                cursor.execute(f'''
+                    SELECT 
+                        {cloud_type_field} as cloud_type,
+                        COUNT(*) as total_count,
+                        SUM(CASE WHEN teh.status = 'success' THEN 1 ELSE 0 END) as success_count,
+                        SUM(CASE WHEN teh.status = 'failed' THEN 1 ELSE 0 END) as failed_count,
+                        SUM(CASE WHEN teh.status = 'running' THEN 1 ELSE 0 END) as running_count,
+                        SUM(CASE WHEN teh.status = 'pending' THEN 1 ELSE 0 END) as pending_count
+                    FROM task_execution_history teh
+                    {join_clause}
+                    WHERE {where_clause}
+                    GROUP BY {cloud_type_field}
+                ''', params)
+                
+                for row in cursor.fetchall():
+                    row_dict = dict(row)
+                    total = row_dict['total_count'] or 0
+                    success = row_dict['success_count'] or 0
+                    row_dict['success_rate'] = round(success / total * 100, 2) if total > 0 else 0
+                    by_cloud_type.append(row_dict)
+            
+            # 按任务类型分组统计（如果未指定task_type）
+            by_task_type = []
+            if not task_type:
+                cursor.execute(f'''
+                    SELECT 
+                        task_type,
+                        COUNT(*) as total_count,
+                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_count,
+                        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running_count,
+                        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count
+                    FROM task_execution_history
+                    WHERE {where_clause}
+                    GROUP BY task_type
+                ''', params)
+                
+                for row in cursor.fetchall():
+                    row_dict = dict(row)
+                    total = row_dict['total_count'] or 0
+                    success = row_dict['success_count'] or 0
+                    row_dict['success_rate'] = round(success / total * 100, 2) if total > 0 else 0
+                    by_task_type.append(row_dict)
+            
+            # 最近失败的任务（用于告警）
+            recent_failures = []
+            if join_clause:
+                cursor.execute(f'''
+                    SELECT 
+                        teh.id,
+                        teh.task_id,
+                        teh.task_type,
+                        teh.task_name,
+                        {cloud_type_field} as cloud_type,
+                        teh.start_time,
+                        teh.end_time,
+                        teh.error_message
+                    FROM task_execution_history teh
+                    {join_clause}
+                    WHERE {where_clause} AND teh.status = 'failed'
+                    ORDER BY teh.start_time DESC
+                    LIMIT 10
+                ''', params)
+            else:
+                cursor.execute(f'''
+                    SELECT 
+                        id,
+                        task_id,
+                        task_type,
+                        task_name,
+                        start_time,
+                        end_time,
+                        error_message
+                    FROM task_execution_history
+                    WHERE {where_clause} AND status = 'failed'
+                    ORDER BY start_time DESC
+                    LIMIT 10
+                ''', params)
+            
+            recent_failures = [dict(row) for row in cursor.fetchall()]
+            
+            return jsonify({
+                'code': 200,
+                'message': 'success',
+                'data': {
+                    'overall': overall,
+                    'by_cloud_type': by_cloud_type,
+                    'by_task_type': by_task_type,
+                    'recent_failures': recent_failures
+                }
+            })
+    except Exception as e:
+        logger.error(f"获取统计信息失败: {e}")
+        return jsonify({
+            'code': 500,
+            'message': f'获取统计信息失败: {str(e)}'
         }), 500

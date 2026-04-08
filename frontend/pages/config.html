@@ -2,7 +2,8 @@
 <style>
     /* 页面容器紧凑边距 */
     body {
-        padding: 20px;
+        padding: 0;
+        margin: 0;
     }
     
     /* 紧凑化配置卡片 */
@@ -239,7 +240,8 @@
     
     /* 编辑账号弹窗紧凑优化 */
     #addAccountModal .modal-content {
-        max-width: 520px !important;
+        max-width: 700px !important;
+        width: 90%;
         background: #FFFFFF;
         border-radius: 6px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
@@ -282,7 +284,9 @@
     }
     
     #addAccountModal .modal-body {
-        padding: 16px 20px;
+        padding: 20px 24px;
+        max-width: 100%;
+        overflow-x: hidden;
     }
     
     #addAccountModal .form-group {
@@ -290,6 +294,7 @@
         display: flex;
         align-items: flex-start;
         gap: 10px;
+        width: 100%;
     }
     
     #addAccountModal .form-group:last-child {
@@ -313,11 +318,15 @@
     
     #addAccountModal .form-input-wrapper {
         flex: 1;
+        min-width: 0;
+        width: 100%;
     }
     
     #addAccountModal .form-input,
     #addAccountModal .form-textarea {
         width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
         padding: 6px 10px;
         font-size: 13px;
         color: #1F2937;
@@ -333,10 +342,14 @@
     }
     
     #addAccountModal .form-textarea {
-        height: 100px;
+        min-height: 150px;
+        height: 150px;
         resize: vertical;
         font-family: 'Consolas', 'Monaco', monospace;
         line-height: 1.4;
+        word-wrap: break-word;
+        white-space: pre-wrap;
+        overflow-wrap: break-word;
     }
     
     #addAccountModal .form-input:focus,
@@ -585,8 +598,16 @@
 
 <div class="config-section">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-        <h3 class="section-title" style="margin: 0;">夸克账号管理</h3>
-        <button class="btn btn-primary" onclick="showAddAccountModal()" style="height: 28px; padding: 0 12px; font-size: 13px;">+ 添加账号</button>
+        <h3 class="section-title" style="margin: 0;">云盘账号管理</h3>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <!-- 云盘类型筛选 -->
+            <select id="accountCloudTypeFilter" class="form-select" style="height: 28px; padding: 0 8px; font-size: 13px; min-width: 120px;">
+                <option value="">全部类型</option>
+                <option value="quark">夸克网盘</option>
+                <option value="cloud189">天翼189云盘</option>
+            </select>
+            <button class="btn btn-primary" onclick="showAddAccountModal()" style="height: 28px; padding: 0 12px; font-size: 13px;">+ 添加账号</button>
+        </div>
     </div>
     <div id="accountList" class="account-list">
         <div class="loading">加载中...</div>
@@ -607,40 +628,12 @@
 </div>
 
 <div class="config-section">
-    <h3 class="section-title">基础下载配置</h3>
+    <h3 class="section-title">云盘下载配置</h3>
     <div class="config-form">
         <div class="form-row">
             <div class="form-row-label">默认下载目录</div>
             <div class="form-row-content">
                 <input type="text" class="form-input" id="downloadDefaultDir" />
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-row-label">最大并发任务数</div>
-            <div class="form-row-content">
-                <input type="number" class="form-input" id="downloadMaxConcurrent" min="1" max="10" />
-                <span class="form-hint">同时下载的任务数量（建议 1-5）</span>
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-row-label">分块下载大小</div>
-            <div class="form-row-content">
-                <input type="number" class="form-input" id="downloadChunkSize" min="1" max="100" />
-                <span class="form-hint">单位: MB，单线程下载时每次读取的块大小（建议 2-10）</span>
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-row-label">下载重试次数</div>
-            <div class="form-row-content">
-                <input type="number" class="form-input" id="downloadRetryCount" min="0" max="10" />
-                <span class="form-hint">下载失败后的重试次数（建议 3-5）</span>
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-row-label">重试延迟</div>
-            <div class="form-row-content">
-                <input type="number" class="form-input" id="downloadRetryDelay" min="1" max="60" />
-                <span class="form-hint">单位: 秒，重试前等待的时间（建议 5-10）</span>
             </div>
         </div>
         <div class="form-row">
@@ -650,26 +643,13 @@
                 <span class="form-hint">单位: 秒，网络请求超时时间（建议 30-60）</span>
             </div>
         </div>
-    </div>
-</div>
-
-<div class="config-section">
-    <h3 class="section-title">多线程下载配置</h3>
-    <div class="config-form">
         <div class="form-row">
-            <div class="form-row-label">启用多线程</div>
+            <div class="form-row-label">启用多线程下载</div>
             <div class="form-row-content">
                 <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
                     <input type="checkbox" id="enableMultithreadDownload" style="width: auto; height: auto;" />
                     <span style="font-size: 13px;">启用多线程下载（大文件下载更快）</span>
                 </label>
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-row-label">多线程阈值</div>
-            <div class="form-row-content">
-                <input type="number" class="form-input" id="multithreadThreshold" min="10" max="1000" />
-                <span class="form-hint">单位: MB，文件大小超过此值时启用多线程下载（建议 50-100）</span>
             </div>
         </div>
         <div class="form-row">
@@ -680,74 +660,23 @@
             </div>
         </div>
         <div class="form-row">
-            <div class="form-row-label">多线程分块大小</div>
+            <div class="form-row-label">每线程分块大小</div>
             <div class="form-row-content">
                 <input type="number" class="form-input" id="multithreadChunkSize" min="1" max="100" />
-                <span class="form-hint">单位: MB，每个线程下载的块大小（建议 5-20）</span>
+                <span class="form-hint">单位: MB，每个线程下载的块大小（建议 5-20）。文件大小阈值将自动计算为：线程数 × 分块大小</span>
             </div>
         </div>
     </div>
 </div>
 
 <div class="config-section">
-    <h3 class="section-title">邮箱配置</h3>
-    <div class="config-form">
-        <div class="form-row">
-            <div class="form-row-label">SMTP服务器</div>
-            <div class="form-row-content">
-                <input type="text" class="form-input" id="emailSmtpServer" placeholder="smtp.qq.com" />
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-row-label">SMTP端口</div>
-            <div class="form-row-content">
-                <input type="number" class="form-input" id="emailSmtpPort" placeholder="465" />
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-row-label">发件邮箱</div>
-            <div class="form-row-content">
-                <input type="email" class="form-input" id="emailSender" />
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-row-label">邮箱密码/授权码</div>
-            <div class="form-row-content">
-                <input type="password" class="form-input" id="emailPassword" />
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-row-label">收件邮箱</div>
-            <div class="form-row-content">
-                <input type="email" class="form-input" id="emailReceiverInput" placeholder="输入邮箱地址" style="width: 200px;" />
-                <button class="btn" onclick="addEmailReceiver()" style="height: 28px; padding: 0 12px; font-size: 13px;">添加</button>
-                <div id="emailReceivers" class="email-tags"></div>
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-row-label"></div>
-            <div class="form-row-content">
-                <button class="btn" onclick="testEmailConfig()" style="height: 28px; padding: 0 12px; font-size: 13px;">测试邮件配置</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="config-section">
-    <h3 class="section-title">API / 解析接口</h3>
+    <h3 class="section-title">盘搜配置</h3>
     <div class="config-form">
         <div class="form-row">
             <div class="form-row-label">盘搜API地址</div>
             <div class="form-row-content">
                 <input type="text" class="form-input" id="pansouApiUrl" />
-                <span class="form-hint">用于资源搜索功能</span>
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-row-label">API密钥</div>
-            <div class="form-row-content">
-                <input type="text" class="form-input" id="pansouApiKey" />
-                <span class="form-hint">如果需要密钥请输入</span>
+                <span class="form-hint">用于资源搜索功能。盘搜下载地址：<a href="https://github.com/fish2018/pansou" target="_blank" style="color: #2563EB; text-decoration: none;">https://github.com/fish2018/pansou</a></span>
             </div>
         </div>
     </div>
@@ -869,6 +798,42 @@
     </div>
 </div>
 
+<div class="config-section">
+    <h3 class="section-title">任务自动失效配置</h3>
+    <div class="config-form">
+        <div class="form-row">
+            <div class="form-row-label">启用自动失效</div>
+            <div class="form-row-content">
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                    <input type="checkbox" id="autoExpirationEnabled" style="width: auto; height: auto;" />
+                    <span style="font-size: 13px;">启用任务自动失效功能</span>
+                </label>
+                <div class="form-hint">当任务超过指定天数未新增剧集且所有剧集下载成功时，自动将任务状态设置为失效</div>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-row-label">超时天数</div>
+            <div class="form-row-content">
+                <input type="number" class="form-input" id="autoExpirationDays" min="1" max="365" value="7" />
+                <span class="form-hint">任务超过多少天未新增剧集将被自动失效（默认7天，范围1-365天）</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="config-section">
+    <h3 class="section-title">通用配置</h3>
+    <div class="config-form">
+        <div class="form-row">
+            <div class="form-row-label">默认排除关键词</div>
+            <div class="form-row-content">
+                <input type="text" class="form-input" id="defaultExcludeKeywords" placeholder="预告|花絮|片花" style="width: 400px;" />
+            </div>
+        </div>
+        <div class="form-hint">默认排除关键词（用|分隔，如：预告|花絮|片花）</div>
+    </div>
+</div>
+
 <div class="save-button-container">
     <button class="btn btn-primary" onclick="saveAllConfig()">保存所有配置</button>
 </div>
@@ -877,20 +842,58 @@
 <div id="addAccountModal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <div class="modal-title" id="accountModalTitle">添加夸克账号</div>
+            <div class="modal-title" id="accountModalTitle">添加云盘账号</div>
             <button class="modal-close" onclick="hideAddAccountModal()">×</button>
         </div>
         <div class="modal-body">
+            <div class="form-group">
+                <label class="form-label">云盘类型<span class="required">*</span></label>
+                <div class="form-input-wrapper">
+                    <select class="form-input" id="accountCloudType" onchange="onCloudTypeChange()">
+                        <option value="quark">夸克网盘</option>
+                        <option value="cloud189">天翼189云盘</option>
+                    </select>
+                </div>
+            </div>
+            
+            <!-- 登录方式选择 (仅天翼云盘显示) -->
+            <div class="form-group" id="loginMethodGroup" style="display: none;">
+                <label class="form-label">登录方式<span class="required">*</span></label>
+                <div class="form-input-wrapper">
+                    <select class="form-input" id="loginMethod" onchange="onLoginMethodChange()">
+                        <option value="cookie">Cookie登录</option>
+                        <option value="password">账号密码登录</option>
+                    </select>
+                </div>
+            </div>
+            
+            <!-- 账号密码输入 (仅天翼云盘+密码登录时显示) -->
+            <div class="form-group" id="usernameInputGroup" style="display: none;">
+                <label class="form-label">手机号<span class="required">*</span></label>
+                <div class="form-input-wrapper">
+                    <input type="text" class="form-input" id="accountUsername" placeholder="请输入手机号" />
+                </div>
+            </div>
+            <div class="form-group" id="passwordInputGroup" style="display: none;">
+                <label class="form-label">密码<span class="required">*</span></label>
+                <div class="form-input-wrapper">
+                    <input type="password" class="form-input" id="accountPassword" placeholder="请输入密码" />
+                </div>
+            </div>
+            
             <div class="form-group">
                 <label class="form-label">账号备注<span class="required">*</span></label>
                 <div class="form-input-wrapper">
                     <input type="text" class="form-input" id="accountRemark" placeholder="如：工作账号" />
                 </div>
             </div>
-            <div class="form-group">
+            <div class="form-group" id="cookieInputGroup">
                 <label class="form-label">Cookie<span class="required">*</span></label>
                 <div class="form-input-wrapper">
                     <textarea class="form-textarea" id="accountCookie" placeholder="从浏览器开发者工具中获取的Cookie"></textarea>
+                    <div class="form-hint" id="cookieHint" style="margin-top: 5px; font-size: 12px; color: #666;">
+                        <!-- 根据云盘类型显示不同的提示 -->
+                    </div>
                 </div>
             </div>
             <div class="form-checkbox-wrapper">
@@ -936,7 +939,6 @@
 (function() {
     // 使用IIFE避免全局变量污染
     let configData = {};
-    let emailReceivers = [];
     let currentEditAccountId = null;
     let platformCookies = {}; // 存储各平台Cookie配置
     let activeCookieTab = null; // 当前激活的Cookie Tab
@@ -1023,38 +1025,30 @@
         // 日志配置
         document.getElementById('logRetentionDays').value = data.log?.retention_days || 30;
 
-        // 下载配置
+        // 云盘下载配置
         document.getElementById('downloadDefaultDir').value = data.download?.default_dir || 'downloads';
-        document.getElementById('downloadMaxConcurrent').value = data.download?.max_concurrent || 3;
-        document.getElementById('downloadChunkSize').value = data.download?.chunk_size || 2;
-        document.getElementById('downloadRetryCount').value = data.download?.retry_count || 3;
-        document.getElementById('downloadRetryDelay').value = data.download?.retry_delay || 5;
         document.getElementById('downloadTimeout').value = data.download?.timeout || 30;
-        
-        // 多线程下载配置
         document.getElementById('enableMultithreadDownload').checked = data.download?.enable_multithread !== false;
-        document.getElementById('multithreadThreshold').value = data.download?.multithread_threshold || 50;
         document.getElementById('threadsPerFile').value = data.download?.threads_per_file || 4;
         document.getElementById('multithreadChunkSize').value = data.download?.multithread_chunk_size || 10;
 
-        // 邮件配置
-        document.getElementById('emailSmtpServer').value = data.email?.smtp_server || '';
-        document.getElementById('emailSmtpPort').value = data.email?.smtp_port || 465;
-        document.getElementById('emailSender').value = data.email?.sender || '';
-        document.getElementById('emailPassword').value = data.email?.password || '';
-        emailReceivers = data.email?.receivers || [];
-        displayEmailReceivers();
-
         // 盘搜配置
         document.getElementById('pansouApiUrl').value = data.pansou?.api_url || 'http://192.168.0.111:8383/';
-        document.getElementById('pansouApiKey').value = data.pansou?.api_key || '';
         
         // 影视解析配置 - 加载多接口配置
         renderVideoParseApis(
             data.video_parse?.apis || [],
             data.video_parse?.default_api  // 传入默认接口
         );
-
+        
+        // 加载第三方解析开关状态
+        const thirdPartyMode = data.video_parse?.third_party_mode || '1';
+        const thirdPartyCheckbox = document.getElementById('videoParseThirdPartyMode');
+        if (thirdPartyCheckbox) {
+            thirdPartyCheckbox.checked = (thirdPartyMode === '1');
+            console.log(`第三方解析开关状态: ${thirdPartyMode}`);
+        }
+        
         // 加载Cookie配置
         platformCookies = data.video_parse?.cookies || {};
         renderCookieTabs();
@@ -1072,15 +1066,24 @@
         document.getElementById('videoDownloadMaxThreads').value = data.video_download?.max_threads || 3;
         document.getElementById('videoEnableMultithreadDownload').checked = data.video_download?.enable_multithread !== false;
         document.getElementById('videoThreadsCount').value = data.video_download?.threads_count || 4;
+        
+        // 任务自动失效配置
+        document.getElementById('autoExpirationEnabled').checked = data.video_expiration?.enabled !== false;
+        document.getElementById('autoExpirationDays').value = data.video_expiration?.days || 7;
+        
+        // 默认排除关键词配置
+        document.getElementById('defaultExcludeKeywords').value = data.default?.exclude_keywords || '';
     }
 
     // 加载账号列表
-    async function loadAccounts() {
+    async function loadAccounts(cloudType = '') {
         const container = document.getElementById('accountList');
         Loading.show(container);
 
         try {
-            const result = await AccountAPI.getList();
+            // 构建查询参数
+            const params = cloudType ? `?cloud_type=${cloudType}` : '';
+            const result = await AccountAPI.getList(params);
             
             if (result.code === 200 && result.data) {
                 displayAccounts(result.data);
@@ -1102,11 +1105,18 @@
             return;
         }
 
-        container.innerHTML = accounts.map(account => `
+        container.innerHTML = accounts.map(account => {
+            // 云盘类型标签
+            const cloudTypeBadge = account.cloud_type === 'cloud189' 
+                ? '<span class="badge" style="background-color: #2196F3;">天翼189</span>'
+                : '<span class="badge" style="background-color: #4CAF50;">夸克</span>';
+            
+            return `
             <div class="account-item">
                 <div class="account-info">
                     <div class="account-name-section">
                         <div class="account-name">${account.remark}${account.account_name ? ` (${account.account_name})` : ''}</div>
+                        ${cloudTypeBadge}
                         ${account.is_main ? '<span class="badge badge-info">主账号</span>' : ''}
                         ${account.member_type ? `<span class="badge badge-warning">${account.member_type === 'SUPER_VIP' ? '超级会员' : account.member_type === 'VIP' ? '普通会员' : account.member_type === 'Z_VIP' ? '至尊会员' : '会员'}</span>` : ''}
                     </div>
@@ -1123,17 +1133,65 @@
                     <button class="btn-small btn-danger" onclick="deleteAccount(${account.id})">删除</button>
                 </div>
             </div>
-        `).join('');
+        `;
+        }).join('');
     }
 
     // 显示添加账号模态框
     function showAddAccountModal() {
         currentEditAccountId = null;
-        document.getElementById('accountModalTitle').textContent = '添加夸克账号';
+        document.getElementById('accountModalTitle').textContent = '添加云盘账号';
+        document.getElementById('accountCloudType').value = 'quark';
         document.getElementById('accountRemark').value = '';
         document.getElementById('accountCookie').value = '';
+        document.getElementById('accountUsername').value = '';
+        document.getElementById('accountPassword').value = '';
         document.getElementById('accountIsMain').checked = false;
+        document.getElementById('loginMethod').value = 'cookie';
+        onCloudTypeChange(); // 更新Cookie提示和显示/隐藏相关字段
         document.getElementById('addAccountModal').classList.add('show');
+    }
+    
+    // 云盘类型变化时更新提示和显示/隐藏登录方式选择
+    function onCloudTypeChange() {
+        const cloudType = document.getElementById('accountCloudType').value;
+        const hintElement = document.getElementById('cookieHint');
+        const loginMethodGroup = document.getElementById('loginMethodGroup');
+        
+        if (cloudType === 'cloud189') {
+            // 天翼云盘显示登录方式选择
+            loginMethodGroup.style.display = 'flex';
+            hintElement.textContent = '天翼189云盘Cookie获取方法：登录cloud.189.cn后，在浏览器开发者工具的Network标签中查找请求头中的Cookie';
+        } else {
+            // 夸克网盘隐藏登录方式选择，只支持Cookie
+            loginMethodGroup.style.display = 'none';
+            hintElement.textContent = '夸克网盘Cookie获取方法：登录pan.quark.cn后，在浏览器开发者工具的Application标签中查找Cookie';
+        }
+        
+        // 触发登录方式变化
+        onLoginMethodChange();
+    }
+    
+    // 登录方式变化时显示/隐藏相关字段
+    function onLoginMethodChange() {
+        const cloudType = document.getElementById('accountCloudType').value;
+        const loginMethod = document.getElementById('loginMethod').value;
+        
+        const usernameGroup = document.getElementById('usernameInputGroup');
+        const passwordGroup = document.getElementById('passwordInputGroup');
+        const cookieGroup = document.getElementById('cookieInputGroup');
+        
+        if (cloudType === 'cloud189' && loginMethod === 'password') {
+            // 账号密码登录：显示用户名密码，隐藏Cookie
+            usernameGroup.style.display = 'flex';
+            passwordGroup.style.display = 'flex';
+            cookieGroup.style.display = 'none';
+        } else {
+            // Cookie登录：隐藏用户名密码，显示Cookie
+            usernameGroup.style.display = 'none';
+            passwordGroup.style.display = 'none';
+            cookieGroup.style.display = 'flex';
+        }
     }
 
     // 隐藏添加账号模态框
@@ -1149,10 +1207,28 @@
             
             if (result.code === 200 && result.data) {
                 currentEditAccountId = id;
-                document.getElementById('accountModalTitle').textContent = '编辑夸克账号';
+                document.getElementById('accountModalTitle').textContent = '编辑云盘账号';
+                document.getElementById('accountCloudType').value = result.data.cloud_type || 'quark';
                 document.getElementById('accountRemark').value = result.data.remark;
-                document.getElementById('accountCookie').value = result.data.cookie;
                 document.getElementById('accountIsMain').checked = result.data.is_main === 1;
+                
+                // 根据是否有username判断登录方式
+                if (result.data.cloud_type === 'cloud189' && result.data.username) {
+                    // 账号密码登录方式
+                    document.getElementById('loginMethod').value = 'password';
+                    document.getElementById('accountUsername').value = result.data.username || '';
+                    document.getElementById('accountPassword').value = result.data.password || '';
+                    document.getElementById('accountCookie').value = '';
+                } else {
+                    // Cookie登录方式
+                    document.getElementById('loginMethod').value = 'cookie';
+                    document.getElementById('accountCookie').value = result.data.cookie || '';
+                    document.getElementById('accountUsername').value = '';
+                    document.getElementById('accountPassword').value = '';
+                }
+                
+                onCloudTypeChange(); // 更新云盘类型相关的界面
+                onLoginMethodChange(); // 更新登录方式相关的界面显示
                 document.getElementById('addAccountModal').classList.add('show');
             } else {
                 Message.error(result.message || '获取账号信息失败');
@@ -1165,41 +1241,94 @@
 
     // 测试并保存账号
     async function testAndSaveAccount() {
+        const cloudType = document.getElementById('accountCloudType').value;
         const remark = document.getElementById('accountRemark').value.trim();
-        const cookie = document.getElementById('accountCookie').value.trim();
         const isMain = document.getElementById('accountIsMain').checked;
-
-        if (!remark || !cookie) {
-            Message.warning('请填写账号备注和Cookie');
-            return;
+        
+        // 获取登录方式和凭证
+        let cookie = '';
+        let username = '';
+        let password = '';
+        
+        if (cloudType === 'cloud189') {
+            const loginMethod = document.getElementById('loginMethod').value;
+            if (loginMethod === 'password') {
+                // 账号密码登录
+                username = document.getElementById('accountUsername').value.trim();
+                password = document.getElementById('accountPassword').value.trim();
+                
+                if (!remark || !username || !password) {
+                    Message.warning('请填写账号备注、手机号和密码');
+                    return;
+                }
+            } else {
+                // Cookie登录
+                cookie = document.getElementById('accountCookie').value.trim();
+                
+                if (!remark || !cookie) {
+                    Message.warning('请填写账号备注和Cookie');
+                    return;
+                }
+            }
+        } else {
+            // 夸克网盘只支持Cookie
+            cookie = document.getElementById('accountCookie').value.trim();
+            
+            if (!remark || !cookie) {
+                Message.warning('请填写账号备注和Cookie');
+                return;
+            }
         }
 
         try {
             // 先测试账号
             Message.info('正在测试账号...');
-            const testResult = await AccountAPI.test(cookie);
+            const testResult = await AccountAPI.test(cookie, cloudType, username, password);
             
             if (testResult.code !== 200) {
                 Message.error(testResult.message || '账号验证失败');
                 return;
+            }
+            
+            // 如果是账号密码登录，从测试结果中获取Cookie
+            if (cloudType === 'cloud189' && username && password && testResult.data && testResult.data.cookie) {
+                cookie = testResult.data.cookie;
             }
 
             // 保存或更新账号
             let result;
             if (currentEditAccountId) {
                 // 更新账号
-                result = await AccountAPI.update(currentEditAccountId, {
-                    remark,
-                    cookie,
+                const updateData = {
+                    cloud_type: cloudType,
+                    remark: remark,
+                    cookie: cookie,
                     is_main: isMain ? 1 : 0
-                });
+                };
+                
+                // 如果是账号密码登录，也保存username和password
+                if (cloudType === 'cloud189' && username && password) {
+                    updateData.username = username;
+                    updateData.password = password;
+                }
+                
+                result = await AccountAPI.update(currentEditAccountId, updateData);
             } else {
-                // 创建账号
-                result = await AccountAPI.create({
-                    remark,
-                    cookie,
+                // 新增账号
+                const createData = {
+                    cloud_type: cloudType,
+                    remark: remark,
+                    cookie: cookie,
                     is_main: isMain ? 1 : 0
-                });
+                };
+                
+                // 如果是账号密码登录，也保存username和password
+                if (cloudType === 'cloud189' && username && password) {
+                    createData.username = username;
+                    createData.password = password;
+                }
+                
+                result = await AccountAPI.create(createData);
             }
 
             if (result.code === 200) {
@@ -1271,82 +1400,10 @@
     }
 
     // 添加收件邮箱
-    function addEmailReceiver() {
-        const input = document.getElementById('emailReceiverInput');
-        const email = input.value.trim();
-
-        if (!email) {
-            Message.warning('请输入邮箱地址');
-            return;
-        }
-
-        if (!validateEmail(email)) {
-            Message.warning('邮箱格式不正确');
-            return;
-        }
-
-        if (emailReceivers.includes(email)) {
-            Message.warning('该邮箱已添加');
-            return;
-        }
-
-        emailReceivers.push(email);
-        displayEmailReceivers();
-        input.value = '';
-    }
-
-    // 显示收件邮箱列表
-    function displayEmailReceivers() {
-        const container = document.getElementById('emailReceivers');
-        container.innerHTML = emailReceivers.map((email, index) => `
-            <div class="email-tag">
-                <span>${email}</span>
-                <span class="email-tag-remove" onclick="removeEmailReceiver(${index})">×</span>
-            </div>
-        `).join('');
-    }
-
-    // 移除收件邮箱
-    function removeEmailReceiver(index) {
-        emailReceivers.splice(index, 1);
-        displayEmailReceivers();
-    }
+    // 已删除邮箱配置相关函数
 
     // 测试邮件配置
-    async function testEmailConfig() {
-        const smtpServer = document.getElementById('emailSmtpServer').value.trim();
-        const smtpPort = document.getElementById('emailSmtpPort').value;
-        const sender = document.getElementById('emailSender').value.trim();
-        const password = document.getElementById('emailPassword').value;
-
-        if (!smtpServer || !smtpPort || !sender || !password) {
-            Message.warning('请填写完整的邮件配置');
-            return;
-        }
-
-        const testEmail = prompt('请输入测试收件邮箱:');
-        if (!testEmail) return;
-
-        try {
-            Message.info('正在发送测试邮件...');
-            const result = await ConfigAPI.testEmail({
-                smtp_server: smtpServer,
-                smtp_port: parseInt(smtpPort),
-                sender,
-                password,
-                receiver: testEmail
-            });
-
-            if (result.code === 200) {
-                Message.success('测试邮件发送成功');
-            } else {
-                Message.error(result.message || '发送失败');
-            }
-        } catch (error) {
-            console.error('测试邮件失败:', error);
-            Message.error('测试失败');
-        }
-    }
+    // 已删除邮箱配置相关函数
     
     // ========== 影视解析接口管理 ==========
     
@@ -1460,6 +1517,9 @@
     function renderVideoParseApis(apis, defaultApi) {
         const container = document.getElementById('videoParseApisList');
         
+        // 保存当前第三方解析开关状态（如果存在）
+        const currentThirdPartyMode = document.getElementById('videoParseThirdPartyMode')?.checked;
+        
         // 合并默认接口和用户接口
         let allApis = [];
         
@@ -1494,7 +1554,8 @@
             const readonly = isDefault ? 'readonly disabled' : '';
             const readonlyStyle = isDefault ? 'background: #f5f5f5; cursor: not-allowed;' : '';
             
-            return `
+            // 构建接口卡片HTML
+            let html = `
             <div class="parse-api-item" data-index="${index}" ${isDefault ? 'data-is-default="true"' : ''}>
                 <label style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
                     <input type="checkbox" 
@@ -1553,8 +1614,26 @@
                     '<span style="color: #999; font-size: 12px; padding: 0 8px;">默认</span>' : 
                     `<button class="parse-api-remove" onclick="removeVideoParseApi(${index})">删除</button>`
                 }
-            </div>
-        `;
+            </div>`;
+            
+            // 如果是默认接口，添加第三方解析开关
+            if (isDefault) {
+                html += `
+            <div class="parse-api-third-party-mode" style="margin-top: 12px; padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px;">
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                    <input type="checkbox" 
+                           id="videoParseThirdPartyMode" 
+                           ${currentThirdPartyMode !== undefined ? (currentThirdPartyMode ? 'checked' : '') : 'checked'}
+                           style="width: 16px; height: 16px; cursor: pointer;" />
+                    <span style="font-size: 14px; font-weight: 500;">启用第三方解析</span>
+                    <span class="tooltip-icon" 
+                          title="开启后第三方资源可能存在广告，若介意请勿开启。&#10;开启后官网直解失败，自动搜索第三方资源进行下载。"
+                          style="cursor: help; color: #999; font-size: 14px; user-select: none;">❓</span>
+                </label>
+            </div>`;
+            }
+            
+            return html;
         }).join('');
     }
     
@@ -1586,16 +1665,24 @@
         }
         
         const currentApis = getVideoParseApis();
-        if (currentApis.length <= 1) {
-            Message.warning('至少保留一个解析接口');
+        
+        // 获取默认接口
+        const defaultApi = getDefaultParseApi();
+        
+        // 计算实际的用户接口索引（需要减去默认接口的偏移）
+        const userApiIndex = defaultApi ? index - 1 : index;
+        
+        if (userApiIndex < 0 || userApiIndex >= currentApis.length) {
+            Message.error('接口索引错误');
             return;
         }
-        currentApis.splice(index, 1);
         
-        // 重新渲染时需要获取默认接口
-        const defaultApi = getDefaultParseApi();
+        // 删除指定的用户接口
+        currentApis.splice(userApiIndex, 1);
+        
+        // 重新渲染
         renderVideoParseApis(currentApis, defaultApi);
-    }
+    };
     
     // 获取默认接口(从DOM中提取)
     function getDefaultParseApi() {
@@ -1842,35 +1929,29 @@
 
     // 保存所有配置
     async function saveAllConfig() {
+        // 验证自动失效配置
+        const autoExpirationDays = parseInt(document.getElementById('autoExpirationDays').value);
+        if (isNaN(autoExpirationDays) || autoExpirationDays < 1 || autoExpirationDays > 365) {
+            Message.error('超时天数必须是1-365之间的整数');
+            return;
+        }
+        
         const data = {
             log: {
                 retention_days: parseInt(document.getElementById('logRetentionDays').value)
             },
             download: {
                 default_dir: document.getElementById('downloadDefaultDir').value,
-                max_concurrent: parseInt(document.getElementById('downloadMaxConcurrent').value),
-                chunk_size: parseInt(document.getElementById('downloadChunkSize').value),
-                retry_count: parseInt(document.getElementById('downloadRetryCount').value),
-                retry_delay: parseInt(document.getElementById('downloadRetryDelay').value),
                 timeout: parseInt(document.getElementById('downloadTimeout').value),
-                // 多线程下载配置
                 enable_multithread: document.getElementById('enableMultithreadDownload').checked,
-                multithread_threshold: parseInt(document.getElementById('multithreadThreshold').value),
                 threads_per_file: parseInt(document.getElementById('threadsPerFile').value),
                 multithread_chunk_size: parseInt(document.getElementById('multithreadChunkSize').value)
             },
-            email: {
-                smtp_server: document.getElementById('emailSmtpServer').value,
-                smtp_port: parseInt(document.getElementById('emailSmtpPort').value),
-                sender: document.getElementById('emailSender').value,
-                password: document.getElementById('emailPassword').value,
-                receivers: emailReceivers
-            },
             pansou: {
-                api_url: document.getElementById('pansouApiUrl').value,
-                api_key: document.getElementById('pansouApiKey').value
+                api_url: document.getElementById('pansouApiUrl').value
             },
             video_parse: {
+                third_party_mode: document.getElementById('videoParseThirdPartyMode')?.checked ? '1' : '0',
                 apis: getVideoParseApis(),
                 cookies: platformCookies
             },
@@ -1904,6 +1985,13 @@
                 max_threads: parseInt(document.getElementById('videoDownloadMaxThreads').value),
                 enable_multithread: document.getElementById('videoEnableMultithreadDownload').checked,
                 threads_count: parseInt(document.getElementById('videoThreadsCount').value)
+            },
+            video_expiration: {
+                enabled: document.getElementById('autoExpirationEnabled').checked,
+                days: parseInt(document.getElementById('autoExpirationDays').value)
+            },
+            default: {
+                exclude_keywords: document.getElementById('defaultExcludeKeywords').value.trim()
             }
         };
 
@@ -1929,11 +2017,24 @@
     window.setMainAccount = setMainAccount;
     window.refreshAccount = refreshAccount;
     window.deleteAccount = deleteAccount;
-    window.addEmailReceiver = addEmailReceiver;
-    window.removeEmailReceiver = removeEmailReceiver;
-    window.testEmailConfig = testEmailConfig;
     window.testVideoParseConfig = testVideoParseConfig;
     window.saveAllConfig = saveAllConfig;
+    window.onCloudTypeChange = onCloudTypeChange;
+    window.onLoginMethodChange = onLoginMethodChange;
+
+    // 云盘类型筛选事件监听
+    const accountCloudTypeFilter = document.getElementById('accountCloudTypeFilter');
+    if (accountCloudTypeFilter) {
+        accountCloudTypeFilter.addEventListener('change', function() {
+            loadAccounts(this.value);
+        });
+    }
+    
+    // 云盘类型选择事件监听（添加账号弹窗）
+    const accountCloudType = document.getElementById('accountCloudType');
+    if (accountCloudType) {
+        accountCloudType.addEventListener('change', onCloudTypeChange);
+    }
 
     // 初始化
     loadConfig();

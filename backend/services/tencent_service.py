@@ -35,13 +35,13 @@ class TencentService:
             'Origin': self.config.get('origin')
         }
         
-        # GetPageData接口固定URL参数
+        # web_vsite API固定URL参数
         self.page_data_params = {
-            'appid': '3000002',
-            'video_appid': '3000002',
-            'guid': 'dc986f55336177f11766922177172',
-            'vplatform': '3',
-            'callerid': '3000002'
+            'video_appid': '3000010',
+            'vplatform': '2',
+            'vdevice_guid': '5bfc7b85c2c3a2b1',
+            'vversion_name': '8.2.96',
+            'vversion_platform': '2'
         }
         
         # share_info接口固定URL参数
@@ -66,12 +66,536 @@ class TencentService:
             return match.group(1)
         return None
     
-    def get_video_title(self, cid: str) -> Dict:
+    def get_video_detail_and_episodes(self, cid: str) -> Dict:
         """
-        通过share_info接口获取视频标题
+        获取视频详情和剧集列表（使用web_vsite API，支持分页获取所有剧集）
         
         Args:
-            cid: 综艺唯一标识
+            cid: 视频唯一标识
+            
+        Returns:
+            包含视频详情和剧集列表的字典
+        """
+        all_episodes = []
+        video_info = {}
+        seen_vids = set()
+        
+        try:
+            logger.info(f"获取腾讯视频详情，cid: {cid}")
+            
+            # 第一步：使用share_info API获取基本视频详情（标题、封面）
+            detail_result = self.get_video_title(cid)
+            if detail_result.get('success'):
+                video_info = {
+                    'title': detail_result.get('title', ''),
+                    'cover_url': detail_result.get('cover_url', ''),
+                    'cover_vt': '',  # share_info不提供竖版封面
+                    'description': '',  # share_info不提供简介
+                    'episode_all': '',  # 后续补充
+                    'update_info': '',  # share_info不提供更新周期
+                    'year': '',
+                    'area': '',
+                    'main_genres': '',
+                    'sub_genre': '',
+                    'score': '',
+                    'score_count': '',
+                    'rank_info': '',
+                    'hotval': '',
+                    'broadcast_time': '',
+                    'tag_text': '',
+                    'cid': cid
+                }
+                logger.info(f"从share_info API获取到视频标题: {video_info.get('title')}")
+            else:
+                logger.warning(f"share_info API获取失败: {detail_result.get('error')}")
+            
+            # 第二步：使用web_vsite API获取剧集列表
+            detail_payload = {
+                "page_params": {
+                    "req_from": "web_vsite",
+                    "page_id": "vsite_episode_list",
+                    "page_type": "detail_operation",
+                    "id_type": "1",
+                    "page_size": "50",
+                    "cid": cid,
+                    "vid": "",
+                    "lid": "",
+                    "page_num": "",
+                    "page_context": "",
+                    "detail_page_type": "1"
+                },
+                "has_cache": 1
+            }
+            
+            response = requests.post(
+                self.api_url,
+                params=self.page_data_params,
+                json=detail_payload,
+                headers=self.headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            result_data = data.get('data', {})
+            module_list = result_data.get('module_list_datas', [])
+            
+            # 解析tabs分页信息和第一批剧集
+            tabs = []
+            for module_group in module_list:
+                module_datas = module_group.get('module_datas', [])
+                for module in module_datas:
+                    module_params = module.get('module_params', {})
+                    desk_module_type = module_params.get('desk_module_type', '')
+                    
+                    if desk_module_type == 'episode_list':
+                        # 从模块参数中提取更新信息
+                        if not video_info.get('update_info'):
+                            video_info['update_info'] = module_params.get('sub_title', '')
+                        
+                        # 解析tabs分页信息
+                        tabs_str = module_params.get('tabs', '')
+                        if tabs_str:
+                            try:
+                                tabs = json.loads(tabs_str)
+                                logger.info(f"发现 {len(tabs)} 个分页tab")
+                            except:
+                                pass
+                        
+                        # 解析当前页剧集
+                        item_data_lists = module.get('item_data_lists', {})
+                        item_datas = item_data_lists.get('item_datas', [])
+                        
+                        # 从第一个剧集中提取businessInfo用于类型识别
+                        if not video_info.get('businessInfo') and len(item_datas) > 0:
+                            first_item = item_datas[0]
+                            item_params = first_item.get('item_params', {})
+                            business_info_str = item_params.get('businessInfo', '')
+                            if business_info_str:
+                                try:
+                                    # businessInfo是JSON字符串,需要解析
+                                    if isinstance(business_info_str, str):
+                                        business_info = json.loads(business_info_str)
+                                    else:
+                                        business_info = business_info_str
+                                    
+                                    # 将businessInfo添加到video_info中供类型识别使用
+                                    video_info['businessInfo'] = business_info
+                                    logger.info(f"提取到businessInfo: video_category={business_info.get('video_category')}")
+                                except Exception as e:
+                                    logger.warning(f"解析businessInfo失败: {e}")
+                        
+                        episodes = self._parse_episodes(item_datas, cid, seen_vids)
+                        all_episodes.extend(episodes)
+                        logger.info(f"首次请求获取到 {len(episodes)} 集")
+            
+            # 第三步：遍历所有tabs获取完整剧集列表
+            for i, tab in enumerate(tabs):
+                if tab.get('selected'):
+                    # 已经获取过的tab跳过
+                    continue
+                    
+                page_context = tab.get('page_context', '')
+                if not page_context:
+                    continue
+                
+                begin = tab.get('begin', 0)
+                end = tab.get('end', 0)
+                logger.info(f"获取第 {i+1} 个tab的剧集 ({begin}-{end}集)...")
+                
+                result = self._get_episode_page(cid, page_context)
+                if result.get('success'):
+                    episodes = result.get('episodes', [])
+                    new_episodes = []
+                    for ep in episodes:
+                        vid = ep.get('vid', '')
+                        if vid and vid not in seen_vids:
+                            seen_vids.add(vid)
+                            new_episodes.append(ep)
+                    all_episodes.extend(new_episodes)
+                    logger.info(f"Tab {i+1} 获取到 {len(new_episodes)} 集新剧集")
+                else:
+                    logger.warning(f"Tab {i+1} 获取失败: {result.get('error')}")
+            
+            # 补充cid和总集数
+            video_info['cid'] = cid
+            video_info['episode_all'] = str(len(all_episodes))
+            
+            # 电影类型特殊处理：如果剧集为0，自动创建默认剧集
+            if len(all_episodes) == 0:
+                # 检查是否为电影类型
+                business_info = video_info.get('businessInfo', {})
+                video_category = business_info.get('video_category', 0)
+                
+                if video_category == 1:  # 电影类型
+                    # 记录日志
+                    movie_title = video_info.get('title', '电影')
+                    logger.info(f"检测到电影类型且剧集为0，自动创建默认剧集：{movie_title}")
+                    
+                    # 尝试从video_info获取时长
+                    duration_str = ''
+                    if 'duration' in video_info:
+                        duration_seconds = video_info.get('duration', 0)
+                        try:
+                            duration_int = int(duration_seconds)
+                            if duration_int > 0:
+                                minutes = duration_int // 60
+                                seconds = duration_int % 60
+                                duration_str = f"{minutes}:{seconds:02d}"
+                        except:
+                            pass
+                    
+                    # 创建默认剧集
+                    default_episode = {
+                        'name': movie_title,  # 使用电影标题作为剧集名称
+                        'title': '',  # 副标题留空
+                        'url': f"{self.base_url}/x/cover/{cid}.html",  # 使用cid构造URL
+                        'vid': '',  # vid留空
+                        'publish_date': video_info.get('broadcast_time', ''),  # 尝试从video_info获取发布日期
+                        'time': duration_str,  # 时长
+                        'image': video_info.get('cover_url', ''),  # 使用封面图
+                        'is_vip': False  # VIP标识默认为false
+                    }
+                    
+                    all_episodes = [default_episode]
+                    video_info['episode_all'] = '1'
+                    
+                    logger.info(f"电影默认剧集创建成功：{movie_title}")
+                else:
+                    # 非电影类型，剧集为0是异常情况
+                    logger.warning(f"非电影类型剧集为0，video_category={video_category}")
+                    return {
+                        'success': False,
+                        'error': '未获取到剧集信息，请检查URL是否正确'
+                    }
+            
+            # 按集数排序
+            all_episodes.sort(key=lambda x: self._extract_episode_number(x.get('name', '')))
+            
+            logger.info(f"已获取所有剧集，共 {len(all_episodes)} 集")
+            
+            return {
+                'success': True,
+                'video_info': video_info,
+                'episodes': all_episodes,
+                'total': len(all_episodes)
+            }
+            
+        except Exception as e:
+            logger.error(f"获取腾讯视频详情失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'success': False,
+                'error': f'请求失败: {str(e)}'
+            }
+    
+    def _extract_episode_number(self, name: str) -> int:
+        """从剧集名称中提取集数用于排序"""
+        import re
+        match = re.search(r'第(\d+)集', name)
+        if match:
+            return int(match.group(1))
+        # 尝试匹配纯数字
+        match = re.search(r'(\d+)', name)
+        if match:
+            return int(match.group(1))
+        return 0
+
+    def _parse_episodes(self, item_datas: List, cid: str, seen_vids: set) -> List[Dict]:
+        """解析剧集列表"""
+        episodes = []
+        
+        for item in item_datas:
+            item_type = item.get('item_type', '')
+            
+            # 只处理正片（item_type=1）
+            if item_type != '1':
+                continue
+            
+            item_params = item.get('item_params', {})
+            vid = item_params.get('vid', '')
+            
+            if not vid or vid in seen_vids:
+                continue
+            
+            seen_vids.add(vid)
+            
+            # 获取剧集标题
+            play_title = item_params.get('play_title', '')
+            title = item_params.get('title', '')
+            video_subtitle = item_params.get('video_subtitle', '')  # 剧集副标题/简介
+            
+            # 处理play_title：去掉前面的剧名部分
+            # 格式通常是：剧名 第X集 详细标题
+            # 我们需要去掉剧名，只保留：第X集 详细标题
+            episode_name = play_title
+            if play_title:
+                # 尝试匹配"第X集"或"第X话"或"第X期"的位置
+                import re
+                match = re.search(r'第\d+[集话期]', play_title)
+                if match:
+                    # 从"第X集"开始截取，去掉前面的剧名
+                    episode_name = play_title[match.start():]
+                else:
+                    # 如果没有匹配到标准格式，保持原样
+                    episode_name = play_title
+            
+            # 综艺节目特殊处理：添加日期前缀
+            # 检查是否为综艺节目（video_category=3）
+            business_info_str = item_params.get('businessInfo', '')
+            is_variety_show = False
+            if business_info_str:
+                try:
+                    import json
+                    business_info = json.loads(business_info_str) if isinstance(business_info_str, str) else business_info_str
+                    video_category = business_info.get('video_category', 0)
+                    is_variety_show = (video_category == 3)
+                except:
+                    pass
+            
+            # 如果是综艺节目且有日期信息，添加日期前缀
+            if is_variety_show:
+                tag_right_text = item_params.get('tag_right_text', '')
+                if tag_right_text:
+                    # 格式：日期 + 原名称
+                    episode_name = f"{tag_right_text} {episode_name}"
+            
+            # 获取时长（秒）
+            duration_seconds = item_params.get('duration', 0)
+            try:
+                duration_int = int(duration_seconds)
+            except:
+                duration_int = 0
+            
+            # 获取标签信息
+            imgtag_all = item_params.get('imgtag_all', '')
+            uni_imgtag = item_params.get('uni_imgtag', '')
+            
+            # 用于标记是否需要过滤
+            should_filter = False
+            
+            # 过滤非正片内容
+            # 1. 过滤预告片
+            # 1.1 检查标题中是否包含"预告"
+            if '预告' in play_title or '预告' in title or '预告' in video_subtitle:
+                logger.debug(f"过滤预告片（标题包含'预告'）: {play_title}")
+                continue
+            
+            # 1.2 检查uni_imgtag标签中是否标记为预告
+            if uni_imgtag:
+                # uni_imgtag可能是字符串或字典
+                try:
+                    if isinstance(uni_imgtag, str):
+                        import json
+                        uni_imgtag_obj = json.loads(uni_imgtag)
+                    else:
+                        uni_imgtag_obj = uni_imgtag
+                    
+                    # 检查所有tag中是否有"预告"标识
+                    for tag_key, tag_value in uni_imgtag_obj.items():
+                        if isinstance(tag_value, dict):
+                            tag_text = tag_value.get('text', '')
+                            if '预告' in tag_text:
+                                logger.debug(f"过滤预告片（uni_imgtag标记为'{tag_text}'）: {play_title}")
+                                should_filter = True
+                                break
+                    
+                    if should_filter:
+                        continue
+                except:
+                    pass
+            
+            # 1.3 检查imgtag_all标签中是否标记为预告
+            if imgtag_all:
+                try:
+                    if isinstance(imgtag_all, str):
+                        import json
+                        imgtag_all_obj = json.loads(imgtag_all)
+                    else:
+                        imgtag_all_obj = imgtag_all
+                    
+                    # 检查所有tag中是否有"预告"或"预"标识
+                    for tag_key, tag_value in imgtag_all_obj.items():
+                        if isinstance(tag_value, dict):
+                            tag_text = tag_value.get('text', '')
+                            if '预告' in tag_text or tag_text.startswith('预-'):
+                                logger.debug(f"过滤预告片（imgtag_all标记为'{tag_text}'）: {play_title}")
+                                should_filter = True
+                                break
+                    
+                    if should_filter:
+                        continue
+                except:
+                    pass
+            
+            # 2. 过滤标题中包含特定关键词的非正片内容
+            filter_keywords = [
+                '花絮', '片段', '特辑', '精彩', '看点', '幕后', 
+                '采访', '访谈', '彩蛋', '番外', '剧透', '解说',
+                '片花', '集锦', '混剪', '速看', '回顾', '盘点',
+                '导视', '片尾曲', '片头曲', '主题曲', '插曲'
+            ]
+            
+            for keyword in filter_keywords:
+                if keyword in play_title or keyword in video_subtitle:
+                    logger.debug(f"过滤非正片内容（包含'{keyword}'）: {play_title}")
+                    should_filter = True
+                    break
+            
+            if should_filter:
+                continue
+            
+            # 3. 标题格式检查：只保留标准正片格式
+            # 允许的格式：
+            # - 第X集、第X话、第X期（如：第01集、第1集、第02话）
+            # - 纯数字（如：01、02、1、2）
+            # - 包含"集"、"话"、"期"的（如：01集、02话）
+            import re
+            
+            # 检查是否是标准正片格式
+            is_valid_format = False
+            
+            # 格式1：第X集/话/期
+            if re.search(r'第\d+[集话期]', play_title):
+                is_valid_format = True
+            # 格式2：纯数字（01、02、1、2等）
+            elif re.match(r'^\d+$', play_title.strip()):
+                is_valid_format = True
+            # 格式3：数字+集/话/期（01集、02话等）
+            elif re.match(r'^\d+[集话期]$', play_title.strip()):
+                is_valid_format = True
+            # 格式4：包含"第"和数字的（第一集、第二话等）
+            elif re.search(r'第[一二三四五六七八九十百千万\d]+[集话期]', play_title):
+                is_valid_format = True
+            
+            if not is_valid_format:
+                logger.debug(f"过滤非标准格式: {play_title}")
+                continue
+            
+            # 格式化时长（秒转为分:秒格式）
+            duration_str = ''
+            if duration_int > 0:
+                minutes = duration_int // 60
+                seconds = duration_int % 60
+                duration_str = f"{minutes}:{seconds:02d}"
+            
+            # 检查是否VIP（使用前面已获取的变量）
+            is_vip = 'VIP' in imgtag_all or 'VIP' in uni_imgtag
+            
+            # 获取发布日期
+            date_str = item_params.get('date', '')
+            
+            # 如果date字段为空，尝试从其他字段获取日期
+            if not date_str:
+                # 尝试从update_time字段获取
+                date_str = item_params.get('update_time', '')
+                if not date_str:
+                    # 尝试从online_time字段获取
+                    date_str = item_params.get('online_time', '')
+                if not date_str:
+                    # 尝试从publish_time字段获取
+                    date_str = item_params.get('publish_time', '')
+            
+            if date_str:
+                try:
+                    date_obj = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+                    date_str = date_obj.strftime('%Y-%m-%d')
+                except:
+                    date_str = date_str.split(' ')[0] if ' ' in date_str else date_str
+            
+            # 调试日志：输出所有可能的日期字段
+            if not date_str:
+                logger.debug(f"剧集 {episode_name}: 未找到日期信息。item_params中的所有字段: {list(item_params.keys())}")
+            
+            episodes.append({
+                'name': episode_name if episode_name else f"第{title}集",
+                'title': video_subtitle,  # 剧集副标题
+                'url': f"{self.base_url}/x/cover/{cid}/{vid}.html",
+                'vid': vid,
+                'publish_date': date_str,
+                'time': duration_str,
+                'image': item_params.get('image_url', ''),
+                'is_vip': is_vip
+            })
+        
+        return episodes
+
+    def _get_episode_page(self, cid: str, page_context: str) -> Dict:
+        """
+        获取指定分页的剧集列表
+        
+        Args:
+            cid: 视频唯一标识
+            page_context: 分页上下文（从tabs中获取）
+            
+        Returns:
+            包含剧集列表的字典
+        """
+        # 使用web_vsite接口获取分页剧集
+        payload = {
+            "page_params": {
+                "req_from": "web_vsite",
+                "page_id": "vsite_episode_list",
+                "page_type": "detail_operation",
+                "id_type": "1",
+                "page_size": "50",
+                "cid": cid,
+                "vid": "",
+                "lid": "",
+                "page_num": "",
+                "page_context": page_context,
+                "detail_page_type": "1"
+            },
+            "has_cache": 1
+        }
+        
+        try:
+            response = requests.post(
+                self.api_url,
+                params=self.page_data_params,
+                json=payload,
+                headers=self.headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            episodes = []
+            seen_vids = set()
+            result_data = data.get('data', {})
+            module_list = result_data.get('module_list_datas', [])
+            
+            for module_group in module_list:
+                module_datas = module_group.get('module_datas', [])
+                for module in module_datas:
+                    module_params = module.get('module_params', {})
+                    desk_module_type = module_params.get('desk_module_type', '')
+                    
+                    if desk_module_type == 'episode_list':
+                        item_data_lists = module.get('item_data_lists', {})
+                        item_datas = item_data_lists.get('item_datas', [])
+                        
+                        episodes = self._parse_episodes(item_datas, cid, seen_vids)
+            
+            return {
+                'success': True,
+                'episodes': episodes
+            }
+            
+        except Exception as e:
+            logger.error(f"获取分页剧集失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def get_video_title(self, cid: str) -> Dict:
+        """
+        通过share_info接口获取视频标题（备用方法）
+        
+        Args:
+            cid: 视频唯一标识
             
         Returns:
             包含标题和封面的字典
@@ -91,8 +615,6 @@ class TencentService:
             )
             response.raise_for_status()
             data = response.json()
-            
-            logger.info(f"share_info API响应: {json.dumps(data, ensure_ascii=False)}")
             
             if data.get('ret') == 0 and data.get('data'):
                 share_item = data['data'].get('shareItem', {})
@@ -116,464 +638,95 @@ class TencentService:
                 'success': False,
                 'error': f'请求失败: {str(e)}'
             }
-    
-    def get_episode_list(self, cid: str, page_context: str = None) -> Dict:
-        """
-        获取剧集列表（支持分页）
-        
-        Args:
-            cid: 综艺唯一标识
-            page_context: 分页上下文（可选）
-            
-        Returns:
-            包含剧集列表的字典
-        """
-        # 构建请求体 - 使用你提供的接口格式
-        payload = {
-            "page_params": {
-                "cid": cid,
-                "vid": "",
-                "page_type": "video_detail",
-                "new_mark_label_enabled": "1"
-            },
-            "page_context": {
-                "rec_req_num": "100"  # 每页返回100条数据
-            },
-            "new_mark_label_enabled": "1"
-        }
-        
-        # 如果有分页上下文，解析并添加到payload
-        if page_context:
-            page_context_dict = {}
-            for item in page_context.split('&'):
-                if '=' in item:
-                    key, value = item.split('=', 1)
-                    page_context_dict[key] = value
-            # 合并page_context，保留rec_req_num
-            payload["page_context"].update(page_context_dict)
-            logger.info(f"使用分页上下文: {payload['page_context']}")
-        
-        # 添加Cookie头
-        cookie_headers = self.headers.copy()
-        cookie_headers['Cookie'] = f'video_appid=3000002;video_platform=3;video_guid=dc986f55336177f11766922177172;vversion_name=8.9.16.0;new_mark_label_enabled=1'
-        cookie_headers['xweb_xhr'] = '1'
-        
-        try:
-            logger.info(f"请求参数: {json.dumps(payload, ensure_ascii=False)}")
-            
-            response = requests.post(
-                self.api_url,
-                params=self.page_data_params,
-                json=payload,
-                headers=cookie_headers,
-                timeout=30
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            # 添加调试日志
-            logger.info(f"GetPageData API完整响应: {json.dumps(data, ensure_ascii=False)}")
-            
-            # 检查返回数据结构
-            if not data:
-                return {
-                    'success': False,
-                    'error': 'API返回空数据'
-                }
-            
-            # 腾讯接口返回格式：顶层有 data 字段
-            result_data = data.get('data')
-            if not result_data:
-                # 如果没有data字段，检查是否有错误信息
-                error_msg = data.get('msg', '未知错误')
-                return {
-                    'success': False,
-                    'error': f'API返回错误: {error_msg}'
-                }
-            
-            # 提取剧集列表
-            episodes = []
-            module_list = result_data.get('module_list_datas', [])
-            
-            # 遍历所有模块，找到剧集列表模块
-            for module_group in module_list:
-                module_datas = module_group.get('module_datas', [])
-                for module in module_datas:
-                    module_params = module.get('module_params', {})
-                    module_type = module_params.get('module_type', '')
-                    
-                    # 找到剧集列表模块（episode_list）
-                    if module_type == 'episode_list':
-                        item_data_lists = module.get('item_data_lists', {})
-                        item_datas = item_data_lists.get('item_datas', [])
-                        
-                        # 第一步：找到"正片"tab的索引
-                        main_tab_index = -1
-                        for i, item in enumerate(item_datas):
-                            item_type = item.get('item_type', '')
-                            # item_type=60 是二级tab（正片、直拍、直播、特辑）
-                            if item_type == '60':
-                                item_params = item.get('item_params', {})
-                                tab_title = item_params.get('title', '')
-                                if tab_title == '正片':
-                                    main_tab_index = i
-                                    logger.info(f"找到正片tab，索引: {i}")
-                                    break
-                        
-                        # 第二步：提取正片tab之后、下一个tab之前的所有剧集
-                        if main_tab_index >= 0:
-                            # 找到下一个tab的索引
-                            next_tab_index = len(item_datas)
-                            for i in range(main_tab_index + 1, len(item_datas)):
-                                if item_datas[i].get('item_type', '') == '60':
-                                    next_tab_index = i
-                                    break
-                            
-                            logger.info(f"正片范围: {main_tab_index + 1} 到 {next_tab_index - 1}")
-                            
-                            # 如果范围无效（tab后面没有剧集），说明剧集可能在tab之前
-                            if main_tab_index + 1 >= next_tab_index:
-                                logger.warning("正片tab后没有剧集，尝试提取tab之前的所有剧集")
-                                main_tab_index = -1  # 重置，使用fallback逻辑
-                            logger.info(f"正片范围: {main_tab_index + 1} 到 {next_tab_index - 1}")
-                            
-                            # 如果范围无效（tab后面没有剧集），说明剧集可能在tab之前
-                            if main_tab_index + 1 >= next_tab_index:
-                                logger.warning("正片tab后没有剧集，尝试提取tab之前的所有剧集")
-                                main_tab_index = -1  # 重置，使用fallback逻辑
-                            else:
-                                # 提取正片范围内的剧集
-                                for i in range(main_tab_index + 1, next_tab_index):
-                                    item = item_datas[i]
-                                    item_type = item.get('item_type', '')
-                                    
-                                    # 只处理正片（item_type=1）
-                                    if item_type != '1':
-                                        continue
-                                    
-                                    item_params = item.get('item_params', {})
-                                    vid = item_params.get('vid', '')
-                                    play_title = item_params.get('play_title', '')
-                                    title = item_params.get('title', '')
-                                    publish_date = item_params.get('publish_date', '')
-                                    
-                                    # 过滤预告片
-                                    if '预告' in play_title or '预告' in title:
-                                        continue
-                                    
-                                    # 提取发布日期（YYYY-MM-DD格式）
-                                    date_str = ''
-                                    if publish_date:
-                                        try:
-                                            date_obj = datetime.strptime(publish_date, '%Y-%m-%d %H:%M:%S')
-                                            date_str = date_obj.strftime('%Y-%m-%d')
-                                        except:
-                                            date_str = publish_date.split(' ')[0] if ' ' in publish_date else publish_date
-                                    
-                                    # 使用play_title作为剧集名称
-                                    episode_name = play_title if play_title else title
-                                    
-                                    # 格式化时长（秒转为分:秒格式）
-                                    duration_str = ''
-                                    duration_seconds = item_params.get('duration', 0)
-                                    if duration_seconds:
-                                        try:
-                                            duration_int = int(duration_seconds)
-                                            minutes = duration_int // 60
-                                            seconds = duration_int % 60
-                                            duration_str = f"{minutes}:{seconds:02d}"
-                                        except:
-                                            duration_str = str(duration_seconds)
-                                    
-                                    # 检查是否VIP
-                                    imgtag_all = item_params.get('imgtag_all', '')
-                                    uni_imgtag = item_params.get('uni_imgtag', '')
-                                    is_vip = 'VIP' in imgtag_all or 'VIP' in uni_imgtag
-                                    
-                                    episodes.append({
-                                        'name': episode_name,
-                                        'title': '',  # 副标题留空
-                                        'url': f"{self.base_url}/x/cover/{cid}/{vid}.html",
-                                        'vid': vid,
-                                        'publish_date': date_str,
-                                        'time': duration_str,
-                                        'image': item_params.get('image_url', ''),
-                                        'is_vip': is_vip
-                                    })
-                        
-                        # 如果没有找到"正片"tab或范围无效，提取所有item_type=1的剧集
-                        if main_tab_index < 0:
-                            for item in item_datas:
-                                item_type = item.get('item_type', '')
-                                
-                                # 跳过tab标签
-                                if item_type in ['28', '60', '23', '13']:
-                                    continue
-                                
-                                # 只处理正片（item_type=1）
-                                if item_type != '1':
-                                    continue
-                                
-                                item_params = item.get('item_params', {})
-                                vid = item_params.get('vid', '')
-                                play_title = item_params.get('play_title', '')
-                                title = item_params.get('title', '')
-                                publish_date = item_params.get('publish_date', '')
-                                
-                                # 过滤预告片
-                                if '预告' in play_title or '预告' in title:
-                                    continue
-                                
-                                # 提取发布日期（YYYY-MM-DD格式）
-                                date_str = ''
-                                if publish_date:
-                                    try:
-                                        date_obj = datetime.strptime(publish_date, '%Y-%m-%d %H:%M:%S')
-                                        date_str = date_obj.strftime('%Y-%m-%d')
-                                    except:
-                                        date_str = publish_date.split(' ')[0] if ' ' in publish_date else publish_date
-                                
-                                # 使用play_title作为剧集名称
-                                episode_name = play_title if play_title else title
-                                
-                                # 格式化时长（秒转为分:秒格式）
-                                duration_str = ''
-                                duration_seconds = item_params.get('duration', 0)
-                                if duration_seconds:
-                                    try:
-                                        duration_int = int(duration_seconds)
-                                        minutes = duration_int // 60
-                                        seconds = duration_int % 60
-                                        duration_str = f"{minutes}:{seconds:02d}"
-                                    except:
-                                        duration_str = str(duration_seconds)
-                                
-                                # 检查是否VIP
-                                imgtag_all = item_params.get('imgtag_all', '')
-                                uni_imgtag = item_params.get('uni_imgtag', '')
-                                is_vip = 'VIP' in imgtag_all or 'VIP' in uni_imgtag
-                                
-                                episodes.append({
-                                    'name': episode_name,
-                                    'title': '',  # 副标题留空
-                                    'url': f"{self.base_url}/x/cover/{cid}/{vid}.html",
-                                    'vid': vid,
-                                    'publish_date': date_str,
-                                    'time': duration_str,
-                                    'image': item_params.get('image_url', ''),
-                                    'is_vip': is_vip
-                                })
-            
-            # 检查是否有下一页
-            has_next_page = result_data.get('has_next_page', False)
-            next_page_context = result_data.get('next_page_context', {})
-            
-            return {
-                'success': True,
-                'episodes': episodes,
-                'has_next_page': has_next_page,
-                'next_page_context': next_page_context
-            }
-                
-        except Exception as e:
-            logger.error(f"获取腾讯视频剧集列表失败: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'success': False,
-                'error': f'请求失败: {str(e)}'
-            }
-    
-    def get_all_episodes(self, cid: str, video_type: str = '') -> Dict:
-        """
-        获取所有剧集（自动处理分页）
-        
-        Args:
-            cid: 综艺唯一标识
-            video_type: 视频类型（如'综艺'），用于判断是否需要在名称前加日期
-            
-        Returns:
-            包含所有剧集的字典
-        """
-        logger.info(f"获取腾讯视频所有剧集，cid: {cid}, 类型: {video_type}")
-        
-        all_episodes = []
-        page_context = None
-        page_num = 1
-        
-        # 判断是否为综艺类型
-        is_variety_show = '综艺' in video_type if video_type else False
-        
-        # 用于检测重复的集合（存储vid）
-        seen_vids = set()
-        
-        while True:
-            logger.info(f"正在获取第 {page_num} 页剧集...")
-            result = self.get_episode_list(cid, page_context)
-            
-            if not result.get('success'):
-                if page_num == 1:
-                    # 第一页失败，直接返回错误
-                    return result
-                else:
-                    # 后续页失败，返回已获取的剧集
-                    logger.warning(f"第 {page_num} 页获取失败，返回已获取的 {len(all_episodes)} 集")
-                    break
-            
-            episodes = result.get('episodes', [])
-            
-            # 检测本页是否有新剧集（通过vid判断）
-            new_episodes = []
-            duplicate_count = 0
-            
-            for episode in episodes:
-                vid = episode.get('vid', '')
-                if vid and vid not in seen_vids:
-                    # 新剧集
-                    seen_vids.add(vid)
-                    new_episodes.append(episode)
-                else:
-                    # 重复剧集
-                    duplicate_count += 1
-            
-            # 如果本页没有任何剧集数据，说明已经到达推荐内容区域，停止获取
-            if len(episodes) == 0:
-                logger.info(f"第 {page_num} 页没有剧集数据，停止获取")
-                logger.info(f"已获取所有剧集，共 {len(all_episodes)} 集")
-                break
-            
-            # 如果本页全是重复剧集，说明已经获取完所有剧集
-            if duplicate_count == len(episodes):
-                logger.info(f"第 {page_num} 页全部为重复剧集（{duplicate_count}个），停止获取")
-                logger.info(f"已获取所有剧集，共 {len(all_episodes)} 集")
-                break
-            
-            # 如果是综艺类型，在剧集名称前加上日期
-            if is_variety_show:
-                for episode in new_episodes:
-                    publish_date = episode.get('publish_date', '')
-                    if publish_date:
-                        # 如果名称中还没有日期，就加上
-                        name = episode.get('name', '')
-                        if not name.startswith(publish_date):
-                            episode['name'] = f"{publish_date} {name}"
-            
-            all_episodes.extend(new_episodes)
-            logger.info(f"第 {page_num} 页获取到 {len(episodes)} 集，新增 {len(new_episodes)} 集，重复 {duplicate_count} 集，累计 {len(all_episodes)} 集")
-            
-            # 检查是否有下一页
-            has_next_page = result.get('has_next_page', False)
-            if not has_next_page:
-                logger.info(f"已获取所有剧集，共 {len(all_episodes)} 集")
-                break
-            
-            # 获取下一页的page_context
-            next_page_context = result.get('next_page_context', {})
-            if not next_page_context:
-                logger.warning("没有下一页上下文，停止分页")
-                break
-            
-            # 构建下一页的page_context字符串
-            page_context_parts = []
-            for key, value in next_page_context.items():
-                page_context_parts.append(f"{key}={value}")
-            page_context = "&".join(page_context_parts)
-            
-            page_num += 1
-            
-            # 防止无限循环
-            if page_num > 100:
-                logger.warning("分页超过100页，停止获取")
-                break
-        
-        return {
-            'success': True,
-            'episodes': all_episodes,
-            'total': len(all_episodes)
-        }
-    
+
     def read_website(self, url: str) -> Dict:
         """
-        读取官网地址，获取影视信息和剧集列表
+        读取腾讯视频网站信息（主入口方法）
         
         Args:
             url: 腾讯视频官网地址
             
         Returns:
-            包含影视信息和剧集列表的字典
+            标准格式的视频信息和剧集列表
         """
-        # 提取cid
+        # 从URL提取cid
         cid = self.extract_cid_from_url(url)
         if not cid:
             return {
                 'success': False,
-                'error': '无效的腾讯视频地址'
+                'error': '无法从URL中提取视频ID，请检查URL格式'
             }
         
-        logger.info(f"开始读取腾讯视频，cid: {cid}")
+        logger.info(f"开始读取腾讯视频，URL: {url}, CID: {cid}")
         
-        # 1. 获取视频标题和封面
-        title_result = self.get_video_title(cid)
-        if not title_result.get('success'):
-            logger.warning(f"获取标题失败: {title_result.get('error')}")
-            video_title = f'腾讯视频_{cid}'
-            cover_url = ''
-        else:
-            video_title = title_result.get('title', f'腾讯视频_{cid}')
-            cover_url = title_result.get('cover_url', '')
+        # 获取视频详情和剧集列表
+        result = self.get_video_detail_and_episodes(cid)
         
-        logger.info(f"视频标题: {video_title}")
+        if not result.get('success'):
+            return result
         
-        # 2. 获取所有剧集（传入类型信息，综艺类型会在名称前加日期）
-        episodes_result = self.get_all_episodes(cid, video_type='综艺')
-        if not episodes_result.get('success'):
-            return episodes_result
+        video_info = result.get('video_info', {})
+        episodes = result.get('episodes', [])
         
-        episodes = episodes_result['episodes']
-        logger.info(f"共获取 {len(episodes)} 集")
-        
-        # 3. 构建影视信息
-        video_info = {
-            'success': True,
-            'title': video_title,
-            'clip_name': video_title,
-            'sub_title': '',
-            'description': '',
-            'area': '',
-            'year': '',
-            'publish_date': '',
-            'opinion_score': '',
-            'leading_actor_names': [],
-            'directors': [],
-            'type_name': '综艺',
-            'cover_url': cover_url,
-            'clip_image': cover_url,
-            'video_id': cid,
-            'clip_id': cid
-        }
-        
-        # 4. 合并结果
+        # 构建标准返回格式（与mango_service保持一致）
         return {
             'success': True,
-            'video_info': video_info,
+            'video_info': {
+                'title': video_info.get('title', ''),
+                'cover_url': video_info.get('cover_url', ''),
+                'cover_vt': video_info.get('cover_vt', ''),
+                'description': video_info.get('description', ''),
+                'episode_all': video_info.get('episode_all', ''),
+                'update_info': video_info.get('update_info', ''),
+                'year': video_info.get('year', ''),
+                'area': video_info.get('area', ''),
+                'main_genres': video_info.get('main_genres', ''),
+                'sub_genre': video_info.get('sub_genre', ''),
+                'score': video_info.get('score', ''),
+                'score_count': video_info.get('score_count', ''),
+                'rank_info': video_info.get('rank_info', ''),
+                'hotval': video_info.get('hotval', ''),
+                'broadcast_time': video_info.get('broadcast_time', ''),
+                'tag_text': video_info.get('tag_text', ''),
+                'cid': cid,
+                'businessInfo': video_info.get('businessInfo', {})  # 添加businessInfo用于类型识别
+            },
             'episodes': episodes,
-            'total_episodes': episodes_result['total'],
+            'total_episodes': len(episodes),
             'platform': 'tencent'
         }
+    
+    def get_all_episodes(self, url: str) -> Dict:
+        """
+        获取所有剧集列表（兼容旧接口）
+        
+        Args:
+            url: 腾讯视频官网地址
+            
+        Returns:
+            剧集列表
+        """
+        return self.read_website(url)
 
 
-# 全局实例(延迟初始化)
-_tencent_service = None
+# 全局单例实例
+_tencent_service: Optional[TencentService] = None
 
-def get_tencent_service():
-    """获取腾讯视频服务实例(单例模式)"""
+
+def get_tencent_service() -> TencentService:
+    """获取腾讯视频服务单例"""
     global _tencent_service
     if _tencent_service is None:
         _tencent_service = TencentService()
     return _tencent_service
 
+
 class _TencentServiceProxy:
+    """腾讯视频服务代理类，用于延迟初始化"""
+    
     def __getattr__(self, name):
         return getattr(get_tencent_service(), name)
 
+
+# 导出代理对象，支持延迟初始化
 tencent_service = _TencentServiceProxy()

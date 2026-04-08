@@ -206,14 +206,24 @@ class QuarkService:
     
     # ========== 文件管理 ==========
     
-    def get_file_list(self, pdir_fid="0", page=1, size=50):
-        """获取文件列表"""
+    def get_file_list(self, folder_id="0", page=1, size=50):
+        """
+        获取文件列表
+        
+        Args:
+            folder_id: 文件夹ID，默认为根目录
+            page: 页码
+            size: 每页数量
+        
+        Returns:
+            dict: 文件列表响应
+        """
         url = f"{self.base_url}/1/clouddrive/file/sort"
         params = {
             "pr": "ucpro",
             "fr": "pc",
             "uc_param_str": "",
-            "pdir_fid": pdir_fid,
+            "pdir_fid": folder_id,  # 使用folder_id参数
             "_page": page,
             "_size": size,
             "_fetch_total": "1",
@@ -222,6 +232,29 @@ class QuarkService:
         }
         response = self._send_request("GET", url, params=params).json()
         return response
+    
+    def list_files(self, folder_id="0", page=1, size=200):
+        """
+        获取文件列表（统一接口）
+        
+        Args:
+            folder_id: 文件夹ID，默认为根目录
+            page: 页码
+            size: 每页数量
+        
+        Returns:
+            list: 文件列表，失败返回 None
+        """
+        try:
+            response = self.get_file_list(folder_id=folder_id, page=page, size=size)
+            if response.get('code') == 0:
+                return response.get('data', {}).get('list', [])
+            else:
+                logger.error(f"获取文件列表失败: {response.get('message', '未知错误')}")
+                return None
+        except Exception as e:
+            logger.error(f"获取文件列表异常: {e}")
+            return None
     
     def get_fids_by_paths(self, file_paths):
         """根据路径获取文件ID"""
@@ -421,7 +454,18 @@ class QuarkService:
     # ========== 分享与转存 ==========
     
     def get_stoken(self, pwd_id, passcode=""):
-        """获取分享令牌"""
+        """
+        获取分享令牌(可验证资源是否失效)
+        
+        参考: quark-auto-save项目的实现
+        
+        Args:
+            pwd_id: 分享ID
+            passcode: 提取码(可选)
+        
+        Returns:
+            dict: API响应,包含status和code等信息
+        """
         url = f"{self.base_url}/1/clouddrive/share/sharepage/token"
         params = {"pr": "ucpro", "fr": "pc"}
         payload = {"pwd_id": pwd_id, "passcode": passcode}
@@ -430,13 +474,23 @@ class QuarkService:
     
     def check_share_link(self, share_url):
         """
-        检查分享链接有效性
+        检查分享链接有效性(统一接口)
+        
+        参考quark-auto-save项目的检测逻辑:
+        通过get_stoken验证链接是否有效,根据返回的status和code判断
         
         Args:
             share_url: 分享链接
         
         Returns:
-            dict: 包含is_valid和相关信息的字典
+            dict: {
+                'is_valid': bool,  # 链接是否有效
+                'status': str,     # 状态描述
+                'code': int,       # 错误码(如果有)
+                'message': str,    # 详细信息
+                'file_count': int, # 文件数量(如果有效)
+                'share_title': str # 分享标题(如果有效)
+            }
         """
         try:
             # 解析分享链接
@@ -445,50 +499,85 @@ class QuarkService:
             if not pwd_id:
                 return {
                     'is_valid': False,
+                    'status': '链接格式错误',
+                    'code': -1,
                     'message': '无效的分享链接格式'
                 }
             
-            # 获取分享令牌
+            logger.info(f"检查夸克链接: pwd_id={pwd_id}, passcode={passcode}, folder_id={folder_id}")
+            
+            # 获取分享令牌(同时验证链接有效性)
             token_result = self.get_stoken(pwd_id, passcode)
+            logger.info(f"get_stoken返回: {token_result}")
             
-            if token_result.get('code') != 0:
+            # 参考quark-auto-save项目的判断逻辑
+            # status=200 且 code=0 表示链接有效
+            if token_result.get('status') == 200 and token_result.get('code') == 0:
+                # 链接有效
+                stoken = token_result.get('data', {}).get('stoken')
+                logger.info(f"链接有效, stoken={stoken}")
+                
+                if stoken:
+                    try:
+                        # 尝试获取分享详情(获取文件数量等信息)
+                        detail_result = self.get_share_detail(pwd_id, stoken, folder_id or "0")
+                        if detail_result.get('code') == 0:
+                            data = detail_result.get('data', {})
+                            file_list = data.get('list', [])
+                            logger.info(f"获取到分享详情, 文件数量: {len(file_list)}")
+                            return {
+                                'is_valid': True,
+                                'status': '正常',
+                                'code': 0,
+                                'message': '链接有效',
+                                'file_count': len(file_list),
+                                'share_title': data.get('title', '')
+                            }
+                        else:
+                            logger.warning(f"获取分享详情失败: {detail_result}")
+                    except Exception as detail_error:
+                        logger.warning(f"获取分享详情异常: {detail_error}")
+                
+                # 即使获取详情失败,只要token有效就说明链接有效
                 return {
-                    'is_valid': False,
-                    'message': token_result.get('message', '链接已失效或不存在')
+                    'is_valid': True,
+                    'status': '正常',
+                    'code': 0,
+                    'message': '链接有效'
                 }
             
-            stoken = token_result.get('data', {}).get('stoken')
-            if not stoken:
-                return {
-                    'is_valid': False,
-                    'message': '无法获取分享令牌'
-                }
+            # 链接无效,根据code返回具体原因
+            code = token_result.get('code', -1)
+            message = token_result.get('message', '未知错误')
+            status_code = token_result.get('status')
             
-            # 获取分享详情
-            detail_result = self.get_share_detail(pwd_id, stoken)
+            logger.info(f"链接无效: status={status_code}, code={code}, message={message}")
             
-            if detail_result.get('code') != 0:
-                return {
-                    'is_valid': False,
-                    'message': detail_result.get('message', '无法获取分享详情')
-                }
-            
-            # 链接有效，返回文件信息
-            data = detail_result.get('data', {})
-            file_list = data.get('list', [])
+            # 根据错误码判断具体原因
+            if code == 31001:
+                status = '分享已失效'
+            elif code == 31002:
+                status = '分享违规'
+            elif code == 31003:
+                status = '密码错误'
+            elif status_code == 500:
+                status = '网络异常'
+            else:
+                status = f'异常({code})'
             
             return {
-                'is_valid': True,
-                'message': '链接有效',
-                'file_count': len(file_list),
-                'share_title': data.get('title', ''),
-                'share_author': data.get('nickname', '')
+                'is_valid': False,
+                'status': status,
+                'code': code,
+                'message': message
             }
             
         except Exception as e:
-            logger.error(f"检查分享链接失败: {e}")
+            logger.error(f"检查夸克分享链接失败: {e}", exc_info=True)
             return {
                 'is_valid': False,
+                'status': '检查失败',
+                'code': -1,
                 'message': f'检测失败: {str(e)}'
             }
     
@@ -553,6 +642,107 @@ class QuarkService:
         }
         response = self._send_request("POST", url, json=payload, params=params).json()
         return response
+    
+    def save_share(self, share_url, target_folder_id='0', password=''):
+        """
+        转存分享文件（完整流程）
+        
+        Args:
+            share_url: 分享链接
+            target_folder_id: 目标文件夹ID
+            password: 分享密码
+        
+        Returns:
+            dict: 转存结果
+        """
+        try:
+            # 1. 解析分享链接
+            pwd_id, passcode, folder_id = self.parse_share_url(share_url)
+            if password:
+                passcode = password
+            
+            if not pwd_id:
+                return {
+                    'success': False,
+                    'message': '无效的分享链接格式'
+                }
+            
+            logger.info(f"开始转存夸克分享: pwd_id={pwd_id}")
+            
+            # 2. 获取分享令牌
+            token_result = self.get_stoken(pwd_id, passcode)
+            if token_result.get('code') != 0:
+                return {
+                    'success': False,
+                    'message': token_result.get('message', '获取分享令牌失败')
+                }
+            
+            stoken = token_result.get('data', {}).get('stoken')
+            if not stoken:
+                return {
+                    'success': False,
+                    'message': '无法获取分享令牌'
+                }
+            
+            # 3. 获取分享详情
+            detail_result = self.get_share_detail(pwd_id, stoken, folder_id or '0')
+            if detail_result.get('code') != 0:
+                return {
+                    'success': False,
+                    'message': detail_result.get('message', '获取分享详情失败')
+                }
+            
+            file_list = detail_result.get('data', {}).get('list', [])
+            if not file_list:
+                return {
+                    'success': False,
+                    'message': '分享链接中没有文件'
+                }
+            
+            # 4. 构造转存参数
+            fid_list = [f['fid'] for f in file_list]
+            fid_token_list = [f['share_fid_token'] for f in file_list]
+            
+            # 5. 执行转存
+            save_result = self.save_share_file(
+                fid_list, fid_token_list, target_folder_id, pwd_id, stoken
+            )
+            
+            if save_result.get('code') == 0:
+                # 如果是异步任务，查询任务状态
+                task_id = save_result.get('data', {}).get('task_id')
+                if task_id:
+                    logger.info(f"夸克转存是异步任务，task_id: {task_id}")
+                    task_result = self.query_task(task_id)
+                    
+                    if task_result.get('status') == 200:
+                        return {
+                            'success': True,
+                            'message': '转存成功',
+                            'task_id': task_id
+                        }
+                    else:
+                        return {
+                            'success': False,
+                            'message': '转存任务失败'
+                        }
+                else:
+                    return {
+                        'success': True,
+                        'message': '转存成功'
+                    }
+            else:
+                return {
+                    'success': False,
+                    'message': save_result.get('message', '转存失败')
+                }
+                
+        except Exception as e:
+            logger.error(f"夸克转存失败: {e}", exc_info=True)
+            return {
+                'success': False,
+                'message': f'转存失败: {str(e)}'
+            }
     
     def get_share_url(self, share_id):
         """
@@ -772,6 +962,36 @@ class QuarkService:
                 break
         
         return response
+    
+    # ========== 下载相关 ==========
+    
+    def prepare_download_headers(self, file_id: str) -> dict:
+        """
+        准备夸克下载请求头（夸克专属实现）
+        
+        夸克下载需要携带完整的Cookie和特定的Headers才能通过认证
+        
+        Args:
+            file_id: 文件ID
+        
+        Returns:
+            dict: 下载请求头，包含Cookie、User-Agent、Referer等
+        """
+        headers = {
+            'Cookie': self.cookie,
+            'User-Agent': self.user_agent,
+            'Accept': '*/*',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Connection': 'keep-alive',
+        }
+        
+        # 设置Referer（夸克要求）
+        if self.base_url:
+            quark_referer = self.base_url.replace('drive-pc', 'pan')
+            headers['Referer'] = quark_referer
+        
+        logger.debug(f"夸克下载请求头已准备: file_id={file_id}")
+        return headers
     
     # ========== 辅助方法 ==========
     

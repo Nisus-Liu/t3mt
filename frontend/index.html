@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>T3MT</title>
     <link rel="stylesheet" href="css/common.css?v=20241231">
     <link rel="stylesheet" href="css/cron-config.css?v=20241231">
@@ -304,7 +304,7 @@
                 </div>
                 <div class="menu-item" data-page="quark">
                     <span class="menu-icon">☁️</span>
-                    <span>夸克网盘</span>
+                    <span>我的云盘</span>
                 </div>
                 <div class="menu-item" data-page="transfer">
                     <span class="menu-icon">⏰</span>
@@ -321,6 +321,10 @@
                 <div class="menu-item" data-page="monitor">
                     <span class="menu-icon">📊</span>
                     <span>调度监控</span>
+                </div>
+                <div class="menu-item" data-page="plugins">
+                    <span class="menu-icon">🔌</span>
+                    <span>插件管理</span>
                 </div>
                 <div class="menu-item" data-page="config">
                     <span class="menu-icon">⚙️</span>
@@ -394,6 +398,19 @@
                         <div style="flex: 1;">
                             <div style="font-weight: 500; color: #e65100; margin-bottom: 4px;">联系方式</div>
                             <div style="color: #666; font-size: 14px;">QQ: 85423296</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="background: #e3f2fd; border-left: 4px solid #2196f3; padding: 16px; border-radius: 4px; margin-bottom: 20px;">
+                    <div style="display: flex; align-items: start; gap: 12px;">
+                        <span style="font-size: 20px;">👥</span>
+                        <div style="flex: 1;">
+                            <div style="font-weight: 500; color: #1565c0; margin-bottom: 4px;">交流群</div>
+                            <div style="color: #666; font-size: 14px;">
+                                QQ群: <span style="color: #1976d2; font-weight: 500; cursor: pointer;" onclick="copyToClipboard('630966420')" title="点击复制">630966420</span>
+                                <span style="color: #999; font-size: 12px; margin-left: 8px;">（问题反馈、经验分享）</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -487,19 +504,21 @@
         </div>
     </div>
 
-    <script src="js/api.js?v=20251227"></script>
+    <script src="js/api.js?v=20260116"></script>
     <script src="js/upgrade-checker.js"></script>
     <script src="js/cron-config.js"></script>
+    <script src="js/regex-config.js?v=20260113"></script>
     <script src="js/common.js"></script>
     <script>
         // 页面配置
         const pages = {
             'search': { title: '资源搜索', file: 'pages/search.html' },
-            'quark': { title: '夸克网盘', file: 'pages/quark.html' },
+            'quark': { title: '我的云盘', file: 'pages/quark.html' },
             'transfer': { title: '定时转存', file: 'pages/transfer.html' },
             'download': { title: '定时下载', file: 'pages/download.html' },
             'video': { title: '影视下载', file: 'pages/video.html' },
             'monitor': { title: '调度监控', file: 'pages/monitor.html' },
+            'plugins': { title: '插件管理', file: 'pages/plugins.html' },
             'config': { title: '系统配置', file: 'pages/config.html' }
         };
 
@@ -713,6 +732,22 @@
         // 隐藏关于弹窗
         function hideAboutModal() {
             document.getElementById('aboutModal').classList.remove('show');
+        }
+        
+        // 复制到剪贴板
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                Message.success('已复制: ' + text);
+            }).catch(() => {
+                // 降级方案
+                const input = document.createElement('input');
+                input.value = text;
+                document.body.appendChild(input);
+                input.select();
+                document.execCommand('copy');
+                document.body.removeChild(input);
+                Message.success('已复制: ' + text);
+            });
         }
         
         // 加载关于信息

@@ -36,7 +36,8 @@ def read_website():
                     'video_info': result['video_info'],
                     'episodes': result['episodes'],
                     'total_episodes': result['total_episodes'],
-                    'platform': result.get('platform', 'mango')  # 返回识别的平台
+                    'platform': result.get('platform', 'mango'),  # 返回识别的平台
+                    'video_type': result.get('video_type', '其他')  # 返回识别的视频类型
                 }
             })
         else:
@@ -68,6 +69,36 @@ def create_task():
             from services.video_parse_service import video_parse_service
             platform = video_parse_service.detect_platform(data['website_url'])
         
+        # 验证平台是否支持
+        supported_platforms = ['mango', 'tencent', 'iqiyi', 'youku']
+        if platform not in supported_platforms:
+            return jsonify({
+                'code': 400, 
+                'message': '目前仅支持腾讯、爱奇艺、优酷、芒果平台'
+            })
+        
+        # 获取文件大小限制配置
+        enable_file_size_check = data.get('enable_file_size_check', 0)
+        min_file_size = data.get('min_file_size', 100)
+        
+        # 验证文件大小限制配置
+        if enable_file_size_check:
+            if not isinstance(min_file_size, int) or min_file_size <= 0:
+                return jsonify({'code': 400, 'message': '最小文件大小必须为正整数'})
+        
+        # 获取失败重试配置
+        enable_retry = data.get('enable_retry', 0)
+        max_retry_count = data.get('max_retry_count', 3)
+        retry_interval = data.get('retry_interval', 5)
+        
+        # 验证失败重试配置
+        if enable_retry:
+            if not isinstance(max_retry_count, int) or max_retry_count < 1 or max_retry_count > 10:
+                return jsonify({'code': 400, 'message': '最大重试次数必须为1-10之间的整数'})
+            
+            if not isinstance(retry_interval, int) or retry_interval < 1:
+                return jsonify({'code': 400, 'message': '重试间隔必须为不小于1的整数'})
+        
         # 创建任务
         task_id = VideoTask.create(
             name=data['name'],
@@ -81,7 +112,15 @@ def create_task():
             create_subfolder=data.get('create_subfolder', 0),
             selected_episodes=data.get('selected_episodes', []),
             platform=platform,
-            video_type=data.get('video_type', '电视剧')
+            video_type=data.get('video_type', '电视剧'),
+            enable_file_size_check=enable_file_size_check,
+            min_file_size=min_file_size,
+            enable_retry=enable_retry,
+            max_retry_count=max_retry_count,
+            retry_interval=retry_interval,
+            regex_pattern=data.get('regex_pattern'),
+            replacement_pattern=data.get('replacement_pattern'),
+            exclude_keywords=data.get('exclude_keywords')
         )
         
         return jsonify({
@@ -167,6 +206,47 @@ def update_task(task_id):
         if 'video_type' in data:
             update_data['video_type'] = data['video_type']
         
+        # 处理文件大小限制配置
+        if 'enable_file_size_check' in data:
+            enable_file_size_check = data['enable_file_size_check']
+            update_data['enable_file_size_check'] = enable_file_size_check
+            
+        if 'min_file_size' in data:
+            min_file_size = data['min_file_size']
+            # 验证最小文件大小
+            if not isinstance(min_file_size, int) or min_file_size <= 0:
+                return jsonify({'code': 400, 'message': '最小文件大小必须为正整数'})
+            update_data['min_file_size'] = min_file_size
+        
+        # 处理失败重试配置
+        if 'enable_retry' in data:
+            enable_retry = data['enable_retry']
+            update_data['enable_retry'] = enable_retry
+            
+        if 'max_retry_count' in data:
+            max_retry_count = data['max_retry_count']
+            # 验证最大重试次数
+            if not isinstance(max_retry_count, int) or max_retry_count < 1 or max_retry_count > 10:
+                return jsonify({'code': 400, 'message': '最大重试次数必须为1-10之间的整数'})
+            update_data['max_retry_count'] = max_retry_count
+            
+        if 'retry_interval' in data:
+            retry_interval = data['retry_interval']
+            # 验证重试间隔
+            if not isinstance(retry_interval, int) or retry_interval < 1:
+                return jsonify({'code': 400, 'message': '重试间隔必须为不小于1的整数'})
+            update_data['retry_interval'] = retry_interval
+        
+        # 处理正则替换配置
+        if 'regex_pattern' in data:
+            update_data['regex_pattern'] = data['regex_pattern']
+        if 'replacement_pattern' in data:
+            update_data['replacement_pattern'] = data['replacement_pattern']
+        
+        # 处理排除关键词配置
+        if 'exclude_keywords' in data:
+            update_data['exclude_keywords'] = data['exclude_keywords']
+        
         VideoTask.update(task_id, **update_data)
         
         return jsonify({
@@ -183,11 +263,20 @@ def delete_task(task_id):
     """删除任务"""
     try:
         from database import db
+        from tasks.scheduler import task_scheduler
         
         task = VideoTask.get_by_id(task_id)
         if not task:
             return jsonify({'code': 404, 'message': '任务不存在'})
         
+        # 从调度器中移除任务
+        try:
+            task_scheduler.remove_task(task_id, 'video')
+            logger.info(f"从调度器移除影视下载任务: {task_id}")
+        except Exception as e:
+            logger.warning(f"从调度器移除任务失败: {str(e)}")
+        
+        # 删除任务记录
         VideoTask.delete(task_id)
         
         # 删除关联的执行历史记录
@@ -202,6 +291,14 @@ def delete_task(task_id):
                 logger.info(f"删除影视下载任务 {task_id} 的 {deleted_count} 条执行历史记录")
         except Exception as e:
             logger.warning(f"删除执行历史记录失败: {str(e)}")
+        
+        # 删除任务的失败记录
+        try:
+            from services.retry_manager import RetryManager
+            RetryManager.clear_task_failures(task_id)
+            logger.info(f"清除影视下载任务 {task_id} 的失败记录")
+        except Exception as e:
+            logger.warning(f"清除失败记录失败: {str(e)}")
         
         return jsonify({
             'code': 200,
@@ -247,28 +344,41 @@ def execute_task(task_id):
                     WHERE id = ?
                 ''', (start_time, len(task.episodes), history_id))
         else:
-            # 手动执行：删除该任务之前的所有执行记录，确保每个任务只保留最新一次执行记录
-            with db.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    DELETE FROM task_execution_history 
-                    WHERE task_id = ? AND task_type = 'video'
-                ''', (task_id,))
-            
-            # 创建新的执行历史记录
+            # 手动执行：检查当天是否已有执行记录
             start_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            schedule_period = datetime.now().strftime('%Y%m%d')  # 设置账期为当天
             
             with db.get_connection() as conn:
                 cursor = conn.cursor()
+                # 先查询当天是否已有执行记录
                 cursor.execute('''
-                    INSERT INTO task_execution_history 
-                    (task_id, task_type, task_name, start_time, status, total_count)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (task_id, 'video', task.name, start_time, 'running', len(task.episodes)))
-                history_id = cursor.lastrowid
+                    SELECT id FROM task_execution_history 
+                    WHERE task_id = ? AND task_type = ? AND schedule_period = ?
+                ''', (task_id, 'video', schedule_period))
+                existing_record = cursor.fetchone()
+                
+                if existing_record:
+                    # 如果已有记录，更新它
+                    history_id = existing_record['id']
+                    cursor.execute('''
+                        UPDATE task_execution_history 
+                        SET status = 'running', start_time = ?, total_count = ?, 
+                            success_count = 0, failed_count = 0, error_message = NULL, logs = NULL
+                        WHERE id = ?
+                    ''', (start_time, len(task.episodes), history_id))
+                else:
+                    # 如果没有记录，创建新的
+                    cursor.execute('''
+                        INSERT INTO task_execution_history 
+                        (task_id, task_type, task_name, start_time, status, total_count, schedule_period)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (task_id, 'video', task.name, start_time, 'running', len(task.episodes), schedule_period))
+                    history_id = cursor.lastrowid
+                conn.commit()  # 立即提交，确保记录可见
         
-        # 更新任务状态为执行中
-        VideoTask.update(task_id, status='downloading', progress=0)
+        # 执行任务时不修改任务状态，只重置进度
+        # 任务状态只能通过"发布"和"下线"按钮修改
+        VideoTask.update(task_id, progress=0)
         
         # 异步执行下载（避免阻塞请求）
         import threading
@@ -301,6 +411,16 @@ def execute_task(task_id):
             try:
                 task_logger.info("开始执行影视下载任务")
                 task_logger.info(f"任务名称: {task.name}")
+                
+                # 提前构建任务配置，避免在异常处理中使用未定义的变量
+                task_config = {
+                    'task_id': task_id,
+                    'enable_file_size_check': task.enable_file_size_check,
+                    'min_file_size': task.min_file_size,
+                    'enable_retry': task.enable_retry,
+                    'max_retry_count': task.max_retry_count,
+                    'retry_interval': task.retry_interval
+                }
                 
                 # 增量更新：重新读取官网获取最新剧集
                 task_logger.info("正在检查更新...")
@@ -365,8 +485,24 @@ def execute_task(task_id):
                                         safe_name = safe_name.replace(char, '_')
                                     safe_name = safe_name.strip()
                                     
+                                    # 应用正则替换（如果配置了）
+                                    final_safe_name = safe_name
+                                    if task.regex_pattern:
+                                        try:
+                                            from utils.filename_replacer import FilenameReplacer
+                                            success, new_name, msg = FilenameReplacer.apply_regex_replacement(
+                                                safe_name, task.regex_pattern, task.replacement_pattern or ''
+                                            )
+                                            if success and new_name != safe_name:
+                                                # 再次清理替换后的文件名
+                                                for char in illegal_chars:
+                                                    new_name = new_name.replace(char, '_')
+                                                final_safe_name = new_name.strip()
+                                        except Exception as e:
+                                            logger.warning(f"正则替换失败: {str(e)}, 使用原文件名")
+                                    
                                     # 只添加未下载的剧集
-                                    if safe_name not in downloaded_episode_names:
+                                    if final_safe_name not in downloaded_episode_names:
                                         episodes_to_download.append(ep)
                             
                             task_logger.info(f"根据用户选择，需要下载 {len(episodes_to_download)} 集（已跳过 {len(selected_indices) - len(episodes_to_download)} 集）")
@@ -405,15 +541,33 @@ def execute_task(task_id):
                                     safe_name = safe_name.replace(char, '_')
                                 safe_name = safe_name.strip()
                                 
-                                if safe_name not in downloaded_episode_names:
+                                # 应用正则替换（如果配置了）
+                                final_safe_name = safe_name
+                                if task.regex_pattern:
+                                    try:
+                                        from utils.filename_replacer import FilenameReplacer
+                                        success, new_name, msg = FilenameReplacer.apply_regex_replacement(
+                                            safe_name, task.regex_pattern, task.replacement_pattern or ''
+                                        )
+                                        if success and new_name != safe_name:
+                                            # 再次清理替换后的文件名
+                                            for char in illegal_chars:
+                                                new_name = new_name.replace(char, '_')
+                                            final_safe_name = new_name.strip()
+                                    except Exception as e:
+                                        logger.warning(f"正则替换失败: {str(e)}, 使用原文件名")
+                                
+                                if final_safe_name not in downloaded_episode_names:
                                     episodes_to_download.append(ep)
                         
                         if len(episodes_to_download) == 0:
                             task_logger.info("所有剧集均已下载完成，无需下载")
                             task_logger.info("任务执行完成")
                             
-                            # 更新任务状态为完成
-                            VideoTask.update(task_id, status='completed', progress=100)
+                            # 手动执行完成，恢复为active状态（如果原来是active）
+                            # 或保持原状态不变
+                            # 只更新进度，不修改状态
+                            VideoTask.update(task_id, progress=100)
                             
                             # 计算执行时长
                             end_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -483,7 +637,23 @@ def execute_task(task_id):
                             safe_name = safe_name.replace(char, '_')
                         safe_name = safe_name.strip()
                         
-                        if safe_name not in downloaded_episode_names:
+                        # 应用正则替换（如果配置了）
+                        final_safe_name = safe_name
+                        if task.regex_pattern:
+                            try:
+                                from utils.filename_replacer import FilenameReplacer
+                                success, new_name, msg = FilenameReplacer.apply_regex_replacement(
+                                    safe_name, task.regex_pattern, task.replacement_pattern or ''
+                                )
+                                if success and new_name != safe_name:
+                                    # 再次清理替换后的文件名
+                                    for char in illegal_chars:
+                                        new_name = new_name.replace(char, '_')
+                                    final_safe_name = new_name.strip()
+                            except Exception as e:
+                                logger.warning(f"正则替换失败: {str(e)}, 使用原文件名")
+                        
+                        if final_safe_name not in downloaded_episode_names:
                             episodes_to_download.append(ep)
                     
                     # 如果所有剧集都已下载，直接返回成功
@@ -491,8 +661,10 @@ def execute_task(task_id):
                         task_logger.info("所有剧集均已下载完成，无需下载")
                         task_logger.info("任务执行完成")
                         
-                        # 更新任务状态为完成
-                        VideoTask.update(task_id, status='completed', progress=100)
+                        # 手动执行完成，恢复为active状态（如果原来是active）
+                        # 或保持原状态不变
+                        # 只更新进度，不修改状态
+                        VideoTask.update(task_id, progress=100)
                         
                         # 计算执行时长
                         end_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -561,8 +733,12 @@ def execute_task(task_id):
                     task.episodes,
                     actual_save_directory,
                     task.name,  # 传入任务名称
+                    task_config,  # 传入任务配置
                     progress_callback,
-                    lambda msg: task_logger.info(msg)
+                    lambda msg: task_logger.info(msg),
+                    task.regex_pattern,  # 传入正则表达式
+                    task.replacement_pattern,  # 传入替换表达式
+                    task.exclude_keywords  # 传入排除关键词
                 )
                 
                 # 更新最终状态
@@ -571,16 +747,28 @@ def execute_task(task_id):
                 end_dt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
                 duration = int((end_dt - start_dt).total_seconds())
                 
+                # 根据下载结果判断最终状态
+                success_count = result['success_count'] + result.get('skipped_count', 0)
+                failed_count = result['failed_count']
+                
+                if failed_count == 0:
+                    final_status = 'success'
+                elif success_count == 0:
+                    final_status = 'failed'
+                else:
+                    final_status = 'partial'  # 部分成功
+                
                 if result['success']:
+                    # 手动执行完成，保持原状态不变
+                    # 只更新进度和下载数
                     VideoTask.update(
                         task_id,
-                        status='completed',
                         progress=100,
-                        downloaded_episodes=result['success_count'] + result.get('skipped_count', 0)
+                        downloaded_episodes=success_count
                     )
                     
                     task_logger.info("任务执行完成")
-                    task_logger.info(f"新下载: {result['success_count']}, 跳过: {result.get('skipped_count', 0)}, 失败: {result['failed_count']}, 总计: {result['total']}")
+                    task_logger.info(f"新下载: {result['success_count']}, 跳过: {result.get('skipped_count', 0)}, 过滤: {result.get('filtered_count', 0)}, 失败: {result['failed_count']}, 总计: {result['total']}")
                     
                     # 更新执行历史
                     with db.get_connection() as conn:
@@ -590,16 +778,80 @@ def execute_task(task_id):
                             SET end_time = ?, duration = ?, status = ?, 
                                 success_count = ?, failed_count = ?, logs = ?
                             WHERE id = ?
-                        ''', (end_time, duration, 'success', result['success_count'] + result.get('skipped_count', 0), 
-                              result['failed_count'], json.dumps(task_logger.get_logs(), ensure_ascii=False), history_id))
+                        ''', (end_time, duration, final_status, success_count, 
+                              failed_count, json.dumps(task_logger.get_logs(), ensure_ascii=False), history_id))
+                    
+                    # 执行关联的插件
+                    try:
+                        from services.plugin_executor import PluginExecutor
+                        
+                        task_logger.info('开始执行关联插件...')
+                        
+                        # 构建任务上下文
+                        task_context = {
+                            'task_id': task_id,
+                            'task_name': task.name,
+                            'task_type': 'video',
+                            'status': 'success',
+                            'start_time': start_time,
+                            'end_time': end_time,
+                            'duration': duration,
+                            'total_count': result['total'],
+                            'success_count': result['success_count'] + result.get('skipped_count', 0),
+                            'failed_count': result['failed_count'],
+                            'total_size': 0,  # 影视下载不统计总大小
+                            'source_path': task.website_url,
+                            'target_path': actual_save_directory,
+                            'error_message': '',
+                            # 影视下载特有字段
+                            'video_name': task.name,
+                            'platform': task.platform if hasattr(task, 'platform') else 'mango',
+                            'video_type': task.video_type if hasattr(task, 'video_type') else '电视剧',
+                        }
+                        
+                        plugin_result = PluginExecutor.execute_plugins(
+                            task_id=task_id,
+                            task_type='video',
+                            execution_id=history_id,
+                            task_context=task_context
+                        )
+                        
+                        if plugin_result['total'] > 0:
+                            msg = (f"插件执行完成: 总计 {plugin_result['total']} 个，"
+                                   f"成功 {plugin_result['success']} 个，"
+                                   f"失败 {plugin_result['failed']} 个，"
+                                   f"跳过 {plugin_result['skipped']} 个")
+                            task_logger.info(msg)
+                            
+                            # 更新日志到数据库
+                            update_logs_to_db()
+                    except Exception as e:
+                        error_msg = f"插件执行异常: {str(e)}"
+                        task_logger.warning(error_msg)
+                        logger.error(error_msg, exc_info=True)
+                        
+                        # 更新日志到数据库
+                        update_logs_to_db()
                 else:
+                    # 下载失败的情况
+                    success_count = result['success_count']
+                    failed_count = result['failed_count']
+                    
+                    # 根据成功/失败数量判断最终状态
+                    if failed_count == 0:
+                        final_status = 'success'
+                    elif success_count == 0:
+                        final_status = 'failed'
+                    else:
+                        final_status = 'partial'  # 部分成功
+                    
                     VideoTask.update(
                         task_id,
-                        status='failed',
-                        downloaded_episodes=result['success_count']
+                        status=final_status,
+                        downloaded_episodes=success_count
                     )
                     
-                    error_message = f"部分下载失败: 成功 {result['success_count']}/{result['total']}"
+                    error_message = f"部分下载失败: 成功 {success_count}/{result['total']}"
                     task_logger.info(f"{error_message}")
                     
                     # 更新执行历史
@@ -610,12 +862,65 @@ def execute_task(task_id):
                             SET end_time = ?, duration = ?, status = ?, 
                                 success_count = ?, failed_count = ?, logs = ?, error_message = ?
                             WHERE id = ?
-                        ''', (end_time, duration, 'failed', result['success_count'], 
-                              result['failed_count'], json.dumps(task_logger.get_logs(), ensure_ascii=False), error_message, history_id))
+                        ''', (end_time, duration, final_status, success_count, 
+                              failed_count, json.dumps(task_logger.get_logs(), ensure_ascii=False), error_message, history_id))
+                    
+                    # 执行关联的插件（即使任务失败也执行）
+                    try:
+                        from services.plugin_executor import PluginExecutor
+                        
+                        task_logger.info('开始执行关联插件...')
+                        
+                        # 构建任务上下文
+                        task_context = {
+                            'task_id': task_id,
+                            'task_name': task.name,
+                            'task_type': 'video',
+                            'status': final_status,
+                            'start_time': start_time,
+                            'end_time': end_time,
+                            'duration': duration,
+                            'total_count': result['total'],
+                            'success_count': success_count,
+                            'failed_count': failed_count,
+                            'total_size': 0,  # 影视下载不统计总大小
+                            'source_path': task.website_url,
+                            'target_path': actual_save_directory,
+                            'error_message': error_message,
+                            # 影视下载特有字段
+                            'video_name': task.name,
+                            'platform': task.platform if hasattr(task, 'platform') else 'mango',
+                            'video_type': task.video_type if hasattr(task, 'video_type') else '电视剧',
+                        }
+                        
+                        plugin_result = PluginExecutor.execute_plugins(
+                            task_id=task_id,
+                            task_type='video',
+                            execution_id=history_id,
+                            task_context=task_context
+                        )
+                        
+                        if plugin_result['total'] > 0:
+                            msg = (f"插件执行完成: 总计 {plugin_result['total']} 个，"
+                                   f"成功 {plugin_result['success']} 个，"
+                                   f"失败 {plugin_result['failed']} 个，"
+                                   f"跳过 {plugin_result['skipped']} 个")
+                            task_logger.info(msg)
+                            
+                            # 更新日志到数据库
+                            update_logs_to_db()
+                    except Exception as e:
+                        error_msg = f"插件执行异常: {str(e)}"
+                        task_logger.warning(error_msg)
+                        logger.error(error_msg, exc_info=True)
+                        
+                        # 更新日志到数据库
+                        update_logs_to_db()
                     
             except Exception as e:
                 logger.error(f"下载任务 {task_id} 失败: {str(e)}", exc_info=True)
-                VideoTask.update(task_id, status='failed')
+                # 手动执行失败，保持原状态不变
+                # 不修改任务状态
                 
                 error_message = str(e)
                 task_logger.info(f"执行异常: {error_message}")
@@ -633,6 +938,58 @@ def execute_task(task_id):
                         SET end_time = ?, duration = ?, status = ?, logs = ?, error_message = ?
                         WHERE id = ?
                     ''', (end_time, duration, 'failed', json.dumps(task_logger.get_logs(), ensure_ascii=False), error_message, history_id))
+                
+                # 执行关联的插件（即使任务异常也执行）
+                try:
+                    from services.plugin_executor import PluginExecutor
+                    
+                    task_logger.info('开始执行关联插件...')
+                    
+                    # 构建任务上下文
+                    task_context = {
+                        'task_id': task_id,
+                        'task_name': task.name,
+                        'task_type': 'video',
+                        'status': 'failed',
+                        'start_time': start_time,
+                        'end_time': end_time,
+                        'duration': duration,
+                        'total_count': 0,
+                        'success_count': 0,
+                        'failed_count': 0,
+                        'total_size': 0,
+                        'source_path': task.website_url,
+                        'target_path': actual_save_directory,
+                        'error_message': error_message,
+                        # 影视下载特有字段
+                        'video_name': task.name,
+                        'platform': task.platform if hasattr(task, 'platform') else 'mango',
+                        'video_type': task.video_type if hasattr(task, 'video_type') else '电视剧',
+                    }
+                    
+                    plugin_result = PluginExecutor.execute_plugins(
+                        task_id=task_id,
+                        task_type='video',
+                        execution_id=history_id,
+                        task_context=task_context
+                    )
+                    
+                    if plugin_result['total'] > 0:
+                        msg = (f"插件执行完成: 总计 {plugin_result['total']} 个，"
+                               f"成功 {plugin_result['success']} 个，"
+                               f"失败 {plugin_result['failed']} 个，"
+                               f"跳过 {plugin_result['skipped']} 个")
+                        task_logger.info(msg)
+                        
+                        # 更新日志到数据库
+                        update_logs_to_db()
+                except Exception as plugin_error:
+                    error_msg = f"插件执行异常: {str(plugin_error)}"
+                    task_logger.warning(error_msg)
+                    logger.error(error_msg, exc_info=True)
+                    
+                    # 更新日志到数据库
+                    update_logs_to_db()
         
         # 启动下载线程
         thread = threading.Thread(target=download_thread, daemon=True)
@@ -640,7 +997,11 @@ def execute_task(task_id):
         
         return jsonify({
             'code': 200,
-            'message': '任务已开始执行'
+            'message': '任务已开始执行',
+            'data': {
+                'execution_id': history_id,  # 返回执行记录ID，前端可以直接跳转
+                'task_id': task_id
+            }
         })
         
     except Exception as e:
@@ -682,14 +1043,27 @@ def parse_test():
 
 @video_bp.route('/task/<int:task_id>/toggle', methods=['POST'])
 def toggle_task(task_id):
-    """启用/禁用任务"""
+    """发布/下线任务"""
     try:
         task = VideoTask.get_by_id(task_id)
         if not task:
             return jsonify({'code': 404, 'message': '任务不存在'})
         
-        # 切换状态
-        new_status = 'paused' if task.status == 'running' else 'running'
+        # 状态转换逻辑：
+        # draft(新建) -> active(生效)
+        # inactive(失效) -> active(生效)
+        # active(生效) -> inactive(失效)
+        # 兼容旧状态：waiting/idle -> active, disabled -> inactive
+        current_status = task.status
+        
+        if current_status in ['draft', 'inactive', 'waiting', 'idle', 'disabled']:
+            new_status = 'active'
+        elif current_status == 'active':
+            new_status = 'inactive'
+        else:
+            # 其他状态（running, completed等）默认转为active
+            new_status = 'active'
+        
         VideoTask.update(task_id, status=new_status)
         
         return jsonify({
@@ -781,3 +1155,95 @@ def monkey_download():
             
     except Exception as e:
         return jsonify({'code': 500, 'message': f'下载异常: {str(e)}'})
+=======
+@video_bp.route('/task/<int:task_id>/clear-failures', methods=['POST'])
+def clear_task_failures(task_id):
+    """清除任务的失败记录"""
+    try:
+        from services.retry_manager import retry_manager
+        
+        task = VideoTask.get_by_id(task_id)
+        if not task:
+@video_bp.route('/task/<int:task_id>/clear-failures', methods=['POST'])
+def clear_task_failures(task_id):
+    """清除任务的失败记录"""
+    try:
+        from services.retry_manager import retry_manager
+        
+        task = VideoTask.get_by_id(task_id)
+        if not task:
+            return jsonify({'code': 404, 'message': '任务不存在'})
+        
+        # 清除失败记录
+        retry_manager.clear_task_failures(task_id)
+        
+        return jsonify({
+            'code': 200,
+            'message': '失败记录已清除'
+        })
+        
+    except Exception as e:
+        logger.error(f"清除失败记录失败: {str(e)}", exc_info=True)
+        return jsonify({'code': 500, 'message': f'清除失败记录失败: {str(e)}'})
+
+
+@video_bp.route('/task/batch-restore', methods=['POST'])
+def batch_restore_tasks():
+    """批量恢复失效任务"""
+    try:
+        from datetime import datetime
+        
+        data = request.get_json()
+        task_ids = data.get('task_ids', [])
+        
+        if not task_ids:
+            return jsonify({'code': 400, 'message': '请选择要恢复的任务'})
+        
+        if not isinstance(task_ids, list):
+            return jsonify({'code': 400, 'message': '任务ID必须为数组'})
+        
+        success_count = 0
+        failed_count = 0
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        for task_id in task_ids:
+            try:
+                # 验证任务是否存在
+                task = VideoTask.get_by_id(task_id)
+                if not task:
+                    logger.warning(f"批量恢复: 任务不存在 task_id={task_id}")
+                    failed_count += 1
+                    continue
+                
+                # 只能恢复失效状态的任务
+                if task.status != 'disabled':
+                    logger.warning(f"批量恢复: 任务状态不是disabled task_id={task_id}, status={task.status}")
+                    failed_count += 1
+                    continue
+                
+                # 恢复任务并重置时间
+                VideoTask.update(
+                    task_id,
+                    status='active',
+                    last_episode_update_time=current_time
+                )
+                
+                logger.info(f"批量恢复成功: task_id={task_id}, task_name={task.name}")
+                success_count += 1
+                
+            except Exception as e:
+                logger.error(f"恢复任务失败: task_id={task_id}, error={e}", exc_info=True)
+                failed_count += 1
+        
+        return jsonify({
+            'code': 200,
+            'message': 'success',
+            'data': {
+                'success_count': success_count,
+                'failed_count': failed_count
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"批量恢复任务失败: {e}", exc_info=True)
+        return jsonify({'code': 500, 'message': f'批量恢复失败: {str(e)}'})

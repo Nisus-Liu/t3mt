@@ -12,9 +12,13 @@ class VideoTask:
     
     def __init__(self, task_id=None, name=None, website_url=None, video_id=None, 
                  clip_id=None, save_directory=None, cron_expression=None,
-                 episodes=None, video_info=None, status='waiting', progress=0,
+                 episodes=None, video_info=None, status='draft', progress=0,
                  downloaded_episodes=0, create_subfolder=0, platform='mango',
-                 video_type='电视剧', created_at=None, updated_at=None):
+                 video_type='电视剧', enable_file_size_check=0, min_file_size=100,
+                 enable_retry=0, max_retry_count=3, retry_interval=5,
+                 regex_pattern=None, replacement_pattern=None,
+                 exclude_keywords=None,
+                 last_episode_update_time=None, created_at=None, updated_at=None):
         self.id = task_id
         self.name = name
         self.website_url = website_url
@@ -30,13 +34,31 @@ class VideoTask:
         self.create_subfolder = create_subfolder
         self.platform = platform  # 视频平台：mango（芒果TV）、tencent（腾讯视频）
         self.video_type = video_type  # 影视类型：电视剧、电影、综艺、动漫、其他
+        # 文件大小限制配置
+        self.enable_file_size_check = enable_file_size_check  # 0=禁用, 1=启用
+        self.min_file_size = min_file_size  # 最小文件大小(MB)
+        # 失败重试配置
+        self.enable_retry = enable_retry  # 0=禁用, 1=启用
+        self.max_retry_count = max_retry_count  # 最大重试次数(1-10)
+        self.retry_interval = retry_interval  # 重试间隔(分钟)
+        # 正则替换配置
+        self.regex_pattern = regex_pattern  # 正则表达式
+        self.replacement_pattern = replacement_pattern  # 替换表达式
+        # 名称过滤配置
+        self.exclude_keywords = exclude_keywords  # 排除关键词（用|分割）
+        # 自动失效相关字段
+        self.last_episode_update_time = last_episode_update_time  # 最后新增剧集时间
         self.created_at = created_at
         self.updated_at = updated_at
     
     @staticmethod
     def create(name, website_url, video_id, clip_id, save_directory, 
                cron_expression, episodes, video_info, create_subfolder=0, 
-               selected_episodes=None, platform='mango', video_type='电视剧'):
+               selected_episodes=None, platform='mango', video_type='电视剧',
+               enable_file_size_check=0, min_file_size=100,
+               enable_retry=0, max_retry_count=3, retry_interval=5,
+               regex_pattern=None, replacement_pattern=None,
+               exclude_keywords=None):
         """创建任务"""
         with get_db() as conn:
             cursor = conn.cursor()
@@ -45,13 +67,20 @@ class VideoTask:
             if selected_episodes is None:
                 selected_episodes = list(range(len(episodes)))
             
+            # 获取当前时间作为创建时间和初始的last_episode_update_time
+            from datetime import datetime
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
             cursor.execute('''
                 INSERT INTO video_tasks 
                 (name, website_url, video_id, clip_id, save_directory, 
                  cron_expression, episodes_json, video_info_json, status, 
                  progress, downloaded_episodes, create_subfolder, 
-                 selected_episodes, last_downloaded_episode, platform, video_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'waiting', 0, 0, ?, ?, 0, ?, ?)
+                 selected_episodes, last_downloaded_episode, platform, video_type,
+                 enable_file_size_check, min_file_size, enable_retry, 
+                 max_retry_count, retry_interval, regex_pattern, replacement_pattern,
+                 exclude_keywords, last_episode_update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 0, 0, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 name, website_url, video_id, clip_id, save_directory,
                 cron_expression, 
@@ -60,7 +89,16 @@ class VideoTask:
                 create_subfolder,
                 json.dumps(selected_episodes, ensure_ascii=False),  # 保存选中的剧集索引
                 platform,
-                video_type
+                video_type,
+                enable_file_size_check,
+                min_file_size,
+                enable_retry,
+                max_retry_count,
+                retry_interval,
+                regex_pattern,
+                replacement_pattern,
+                exclude_keywords,
+                current_time  # 初始化last_episode_update_time为创建时间
             ))
             return cursor.lastrowid
     
@@ -92,7 +130,10 @@ class VideoTask:
             'name', 'website_url', 'video_id', 'clip_id', 'save_directory',
             'cron_expression', 'episodes_json', 'video_info_json', 'status',
             'progress', 'downloaded_episodes', 'create_subfolder',
-            'selected_episodes', 'last_downloaded_episode', 'platform', 'video_type'
+            'selected_episodes', 'last_downloaded_episode', 'platform', 'video_type',
+            'enable_file_size_check', 'min_file_size', 'enable_retry',
+            'max_retry_count', 'retry_interval', 'regex_pattern', 'replacement_pattern',
+            'exclude_keywords', 'last_episode_update_time'
         ]
         
         # 处理episodes和video_info的JSON序列化
@@ -174,6 +215,15 @@ class VideoTask:
             create_subfolder=row['create_subfolder'] if 'create_subfolder' in row.keys() else 0,
             platform=row['platform'] if 'platform' in row.keys() else 'mango',
             video_type=row['video_type'] if 'video_type' in row.keys() else '电视剧',
+            enable_file_size_check=row['enable_file_size_check'] if 'enable_file_size_check' in row.keys() else 0,
+            min_file_size=row['min_file_size'] if 'min_file_size' in row.keys() else 100,
+            enable_retry=row['enable_retry'] if 'enable_retry' in row.keys() else 0,
+            max_retry_count=row['max_retry_count'] if 'max_retry_count' in row.keys() else 3,
+            retry_interval=row['retry_interval'] if 'retry_interval' in row.keys() else 5,
+            regex_pattern=row['regex_pattern'] if 'regex_pattern' in row.keys() else None,
+            replacement_pattern=row['replacement_pattern'] if 'replacement_pattern' in row.keys() else None,
+            exclude_keywords=row['exclude_keywords'] if 'exclude_keywords' in row.keys() else None,
+            last_episode_update_time=row['last_episode_update_time'] if 'last_episode_update_time' in row.keys() else None,
             created_at=row['created_at'],
             updated_at=row['updated_at']
         )
@@ -202,6 +252,15 @@ class VideoTask:
             'video_type': self.video_type,
             'selected_episodes': getattr(self, 'selected_episodes', []),
             'last_downloaded_episode': getattr(self, 'last_downloaded_episode', 0),
+            'enable_file_size_check': self.enable_file_size_check,
+            'min_file_size': self.min_file_size,
+            'enable_retry': self.enable_retry,
+            'max_retry_count': self.max_retry_count,
+            'retry_interval': self.retry_interval,
+            'regex_pattern': self.regex_pattern,
+            'replacement_pattern': self.replacement_pattern,
+            'exclude_keywords': self.exclude_keywords,
+            'last_episode_update_time': self.last_episode_update_time,
             'created_at': self.created_at,
             'updated_at': self.updated_at
         }

@@ -65,6 +65,15 @@ class SchedulerService:
         )
         cls._cleanup_thread.start()
         logger.info("日志清理线程已启动")
+        
+        # 启动自动失效检查线程（每天凌晨3点执行）
+        cls._expiration_thread = threading.Thread(
+            target=cls._expiration_check_loop,
+            daemon=True,
+            name="ExpirationCheckThread"
+        )
+        cls._expiration_thread.start()
+        logger.info("自动失效检查线程已启动")
     
     @classmethod
     def stop(cls):
@@ -272,6 +281,50 @@ class SchedulerService:
             logger.error(f"清理调度日志失败: {e}", exc_info=True)
     
     @classmethod
+    def _expiration_check_loop(cls):
+        """自动失效检查循环 - 每天凌晨3点执行"""
+        logger.info("自动失效检查循环已启动")
+        
+        while cls._running:
+            try:
+                now = datetime.now()
+                # 计算下次执行时间（明天凌晨3点）
+                next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+                if now.hour >= 3:
+                    next_run += timedelta(days=1)
+                
+                # 计算需要等待的秒数
+                wait_seconds = (next_run - now).total_seconds()
+                
+                # 如果是首次启动且已过凌晨3点，立即执行一次
+                if wait_seconds > 86000:  # 超过23小时，说明是首次启动
+                    logger.info("首次启动，立即执行一次自动失效检查")
+                    cls._check_task_expiration()
+                
+                logger.info(f"下次自动失效检查时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # 等待到下次执行时间
+                time.sleep(wait_seconds)
+                
+                # 执行检查
+                cls._check_task_expiration()
+                
+            except Exception as e:
+                logger.error(f"自动失效检查循环异常: {e}", exc_info=True)
+                time.sleep(3600)  # 出错后等待1小时再试
+    
+    @classmethod
+    def _check_task_expiration(cls):
+        """执行自动失效检查"""
+        try:
+            logger.info("开始执行自动失效检查")
+            from services.auto_expiration_service import AutoExpirationService
+            AutoExpirationService.check_and_expire_tasks()
+            logger.info("自动失效检查完成")
+        except Exception as e:
+            logger.error(f"自动失效检查失败: {e}", exc_info=True)
+    
+    @classmethod
     def _generate_today_schedules(cls):
         """生成今天的待执行任务账期"""
         try:
@@ -281,27 +334,27 @@ class SchedulerService:
             with get_db() as conn:
                 cursor = conn.cursor()
                 
-                # 获取所有启用的定时转存任务
+                # 获取所有生效状态的定时转存任务
                 cursor.execute("""
                     SELECT id, name, cron_expression 
                     FROM transfer_tasks 
-                    WHERE status = 'running'
+                    WHERE status = 'active'
                 """)
                 transfer_tasks = cursor.fetchall()
                 
-                # 获取所有启用的定时下载任务
+                # 获取所有生效状态的定时下载任务
                 cursor.execute("""
                     SELECT id, name, cron_expression 
                     FROM download_tasks 
-                    WHERE status = 'running'
+                    WHERE status = 'active'
                 """)
                 download_tasks = cursor.fetchall()
                 
-                # 获取所有启用的影视下载任务
+                # 获取所有生效状态的影视下载任务
                 cursor.execute("""
                     SELECT id, name, cron_expression 
                     FROM video_tasks 
-                    WHERE status != 'disabled' AND cron_expression IS NOT NULL AND cron_expression != ''
+                    WHERE status = 'active' AND cron_expression IS NOT NULL AND cron_expression != ''
                 """)
                 video_tasks = cursor.fetchall()
                 
@@ -753,8 +806,20 @@ class SchedulerService:
                         if len(new_episodes) > len(old_episodes):
                             logger.info(f"发现新剧集: 原有{len(old_episodes)}集, 最新{len(new_episodes)}集")
                             
-                            # 更新任务的剧集列表
-                            VideoTask.update(task_id, episodes=new_episodes)
+                            # 更新任务的剧集列表和最后更新时间
+                            # 只有当任务状态为active时才更新last_episode_update_time
+                            if task.status == 'active':
+                                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                VideoTask.update(
+                                    task_id, 
+                                    episodes=new_episodes,
+                                    last_episode_update_time=current_time
+                                )
+                                logger.info(f"[AutoExpiration] 检测到新剧集，已重置计时器: task_id={task_id}, last_episode_update_time={current_time}")
+                            else:
+                                # 失效任务只更新剧集列表，不更新时间
+                                VideoTask.update(task_id, episodes=new_episodes)
+                                logger.info(f"[AutoExpiration] 任务状态为{task.status}，不更新last_episode_update_time")
                             
                             # 重新加载任务以获取最新数据
                             task = VideoTask.get_by_id(task_id)
@@ -811,12 +876,14 @@ class SchedulerService:
                     """, (start_time, len(task.episodes), execution_id))
                     conn.commit()
                 
-                # 更新任务状态为执行中
-                VideoTask.update(task_id, status='downloading', progress=0)
+                # 调度执行任务时不修改任务状态，只重置进度
+                # 任务状态只能通过"发布"和"下线"按钮修改
+                VideoTask.update(task_id, progress=0)
                 
                 # 在新线程中执行下载任务
                 def download_thread():
                     from utils.task_logger import TaskLogger
+                    from services.video_parse_service import video_parse_service  # 在内层函数中导入
                     
                     task_logger = TaskLogger()
                     
@@ -850,6 +917,20 @@ class SchedulerService:
                             if result.get('success'):
                                 latest_episodes = result['episodes']
                                 task_logger.info(f"官网最新剧集数: {len(latest_episodes)}")
+                                
+                                # ========== 新增：检查并重置URL已变化的失败记录 ==========
+                                if task_config.get('enable_retry'):
+                                    try:
+                                        from services.retry_manager import retry_manager
+                                        reset_count = retry_manager.check_and_reset_url_changed_episodes(
+                                            task_id, 
+                                            latest_episodes
+                                        )
+                                        if reset_count > 0:
+                                            task_logger.info(f"检测到 {reset_count} 个剧集的下载地址已更新，已清除旧的失败记录，将使用新地址重新下载")
+                                    except Exception as e:
+                                        logger.error(f"检查URL变化失败: {str(e)}")
+                                # ========== URL变化检查结束 ==========
                                 
                                 # 获取用户选择的剧集索引
                                 selected_indices = []
@@ -937,7 +1018,9 @@ class SchedulerService:
                                     task_logger.info(f"所有剧集均已下载完成，无需下载")
                                     task_logger.info(f"任务执行完成")
                                     
-                                    VideoTask.update(task_id, status='completed', progress=100)
+                                    # 任务执行完成，保持active状态（定时任务需要继续执行）
+                                    # 不修改任务状态，只更新进度
+                                    VideoTask.update(task_id, progress=100)
                                     
                                     end_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                                     start_dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S')
@@ -1000,14 +1083,55 @@ class SchedulerService:
                             elif status == 'failed':
                                 task_logger.error(f"下载失败: {episode_name}")
                         
+                        # 获取任务配置
+                        task_config = {
+                            'enable_file_size_check': task.enable_file_size_check if hasattr(task, 'enable_file_size_check') else False,
+                            'min_file_size': task.min_file_size if hasattr(task, 'min_file_size') else 10,
+                            'enable_retry': task.enable_retry if hasattr(task, 'enable_retry') else False,
+                            'max_retry_count': task.max_retry_count if hasattr(task, 'max_retry_count') else 3,
+                            'retry_interval': task.retry_interval if hasattr(task, 'retry_interval') else 30
+                        }
+                        
+                        # 重新获取最新的剧集列表
+                        task_logger.info("正在获取最新的剧集列表...")
+                        try:
+                            from services.video_parse_service import video_parse_service
+                            
+                            # 使用统一的解析服务获取剧集列表
+                            parse_result = video_parse_service.read_website(task.website_url, task.platform)
+                            
+                            if parse_result.get('success'):
+                                latest_episodes = parse_result.get('episodes', [])
+                                task_logger.info(f"获取到最新剧集列表，共 {len(latest_episodes)} 集")
+                                
+                                # 如果任务有选中的剧集索引，只下载选中的剧集
+                                if hasattr(task, 'selected_episodes') and task.selected_episodes:
+                                    selected_indices = task.selected_episodes
+                                    episodes_to_download = [latest_episodes[i] for i in selected_indices if i < len(latest_episodes)]
+                                    task_logger.info(f"根据选集配置，将下载 {len(episodes_to_download)} 集")
+                                else:
+                                    # 没有选集配置，下载所有剧集
+                                    episodes_to_download = latest_episodes
+                                    task_logger.info(f"将下载所有剧集")
+                            else:
+                                task_logger.warning(f"获取最新剧集失败: {parse_result.get('error', '未知错误')}，使用任务中保存的剧集列表")
+                                episodes_to_download = task.episodes
+                        except Exception as e:
+                            task_logger.error(f"获取最新剧集异常: {e}，使用任务中保存的剧集列表")
+                            episodes_to_download = task.episodes
+                        
                         # 执行下载
                         result = video_download_service.download_task_episodes(
-                            task_id,
-                            task.episodes,
-                            actual_save_directory,
-                            task.name,  # 传入任务名称
-                            progress_callback,
-                            lambda msg: task_logger.info(msg)
+                            task_id=task_id,
+                            episodes=episodes_to_download,
+                            save_directory=actual_save_directory,
+                            task_name=task.name,
+                            task_config=task_config,
+                            progress_callback=progress_callback,
+                            log_callback=lambda msg: task_logger.info(msg),
+                            regex_pattern=task.regex_pattern,
+                            replacement_pattern=task.replacement_pattern,
+                            exclude_keywords=task.exclude_keywords
                         )
                         
                         # 更新最终状态
@@ -1016,16 +1140,28 @@ class SchedulerService:
                         end_dt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
                         duration = int((end_dt - start_dt).total_seconds())
                         
+                        # 根据下载结果判断最终状态
+                        success_count = result['success_count'] + result.get('skipped_count', 0)
+                        failed_count = result['failed_count']
+                        
+                        if failed_count == 0:
+                            final_status = 'success'
+                        elif success_count == 0:
+                            final_status = 'failed'
+                        else:
+                            final_status = 'partial'  # 部分成功
+                        
                         if result['success']:
+                            # 任务执行完成，保持active状态（定时任务需要继续执行）
+                            # 不修改任务状态，只更新进度和下载数
                             VideoTask.update(
                                 task_id,
-                                status='completed',
                                 progress=100,
-                                downloaded_episodes=result['success_count'] + result.get('skipped_count', 0)
+                                downloaded_episodes=success_count
                             )
                             
                             task_logger.info(f"任务执行完成")
-                            task_logger.info(f"新下载: {result['success_count']}, 跳过: {result.get('skipped_count', 0)}, 失败: {result['failed_count']}, 总计: {result['total']}")
+                            task_logger.info(f"新下载: {result['success_count']}, 跳过: {result.get('skipped_count', 0)}, 过滤: {result.get('filtered_count', 0)}, 失败: {result['failed_count']}, 总计: {result['total']}")
                             
                             with get_db() as conn:
                                 cursor = conn.cursor()
@@ -1034,17 +1170,48 @@ class SchedulerService:
                                     SET end_time = ?, duration = ?, status = ?, 
                                         success_count = ?, failed_count = ?, logs = ?
                                     WHERE id = ?
-                                """, (end_time, duration, 'success', result['success_count'] + result.get('skipped_count', 0), 
-                                      result['failed_count'], json.dumps(task_logger.get_logs(), ensure_ascii=False), execution_id))
+                                """, (end_time, duration, final_status, success_count, 
+                                      failed_count, json.dumps(task_logger.get_logs(), ensure_ascii=False), execution_id))
                                 conn.commit()
+                            
+                            # 执行关联的插件
+                            cls._execute_task_plugins(
+                                task_id=task_id,
+                                task_type='video',
+                                execution_id=execution_id,
+                                task_name=task.name,
+                                final_status=final_status,
+                                start_time=start_time,
+                                end_time=end_time,
+                                success_count=success_count,
+                                failed_count=failed_count,
+                                total_count=result['total'],
+                                target_path=actual_save_directory,
+                                task_logger=task_logger,
+                                duration=duration,  # 传递执行耗时
+                                total_size=0  # 影视下载暂不统计大小
+                            )
                         else:
+                            # 下载失败的情况
+                            success_count = result['success_count']
+                            failed_count = result['failed_count']
+                            
+                            # 根据成功/失败数量判断最终状态
+                            if failed_count == 0:
+                                final_status = 'success'
+                            elif success_count == 0:
+                                final_status = 'failed'
+                            else:
+                                final_status = 'partial'  # 部分成功
+                            
+                            # 任务执行完成，保持active状态（定时任务需要继续执行）
+                            # 不修改任务状态，只更新下载数
                             VideoTask.update(
                                 task_id,
-                                status='failed',
-                                downloaded_episodes=result['success_count']
+                                downloaded_episodes=success_count
                             )
                             
-                            error_message = f"部分下载失败: 成功 {result['success_count']}/{result['total']}"
+                            error_message = f"部分下载失败: 成功 {success_count}/{result['total']}"
                             task_logger.info(f"{error_message}")
                             
                             with get_db() as conn:
@@ -1054,13 +1221,33 @@ class SchedulerService:
                                     SET end_time = ?, duration = ?, status = ?, 
                                         success_count = ?, failed_count = ?, logs = ?, error_message = ?
                                     WHERE id = ?
-                                """, (end_time, duration, 'failed', result['success_count'], 
-                                      result['failed_count'], json.dumps(task_logger.get_logs(), ensure_ascii=False), error_message, execution_id))
+                                """, (end_time, duration, final_status, success_count, 
+                                      failed_count, json.dumps(task_logger.get_logs(), ensure_ascii=False), error_message, execution_id))
                                 conn.commit()
+                            
+                            # 执行关联的插件（即使任务失败也执行）
+                            cls._execute_task_plugins(
+                                task_id=task_id,
+                                task_type='video',
+                                execution_id=execution_id,
+                                task_name=task.name,
+                                final_status='failed',
+                                start_time=start_time,
+                                end_time=end_time,
+                                success_count=result['success_count'],
+                                failed_count=result['failed_count'],
+                                total_count=result['total'],
+                                target_path=actual_save_directory,
+                                task_logger=task_logger,
+                                error_message=error_message,
+                                duration=duration,  # 传递执行耗时
+                                total_size=0  # 影视下载暂不统计大小
+                            )
                         
                     except Exception as e:
                         logger.error(f"下载任务 {task_id} 失败: {str(e)}", exc_info=True)
-                        VideoTask.update(task_id, status='failed')
+                        # 任务执行失败，保持active状态（定时任务需要继续执行）
+                        # 不修改任务状态
                         
                         error_message = str(e)
                         task_logger.info(f"执行异常: {error_message}")
@@ -1131,6 +1318,82 @@ class SchedulerService:
                 logger.error(f"记录错误日志失败: {log_error}")
             
             raise
+    
+    @classmethod
+    def _execute_task_plugins(cls, task_id, task_type, execution_id, task_name,
+                              final_status, start_time, end_time, success_count,
+                              failed_count, total_count, target_path,
+                              task_logger=None, source_path='', error_message='',
+                              duration=0, total_size=0):
+        """
+        执行任务关联的插件
+        
+        Args:
+            task_id: 任务ID
+            task_type: 任务类型（transfer/download/video）
+            execution_id: 执行记录ID
+            task_name: 任务名称
+            final_status: 最终状态（success/failed/partial）
+            start_time: 开始时间
+            end_time: 结束时间
+            success_count: 成功数
+            failed_count: 失败数
+            total_count: 总数
+            target_path: 目标路径
+            task_logger: 任务日志记录器（可选）
+            source_path: 源路径（可选）
+            error_message: 错误信息（可选）
+            duration: 执行耗时（秒）
+            total_size: 总大小（字节）
+        """
+        try:
+            from services.plugin_executor import PluginExecutor
+            
+            # 构建任务上下文
+            task_context = {
+                'task_id': task_id,
+                'task_name': task_name,
+                'task_type': task_type,
+                'status': final_status,
+                'start_time': start_time,
+                'end_time': end_time,
+                'duration': duration,  # 添加执行耗时
+                'total_count': total_count,
+                'success_count': success_count,
+                'failed_count': failed_count,
+                'total_size': total_size,  # 添加总大小
+                'source_path': source_path,
+                'target_path': target_path,
+                'error_message': error_message,
+            }
+            
+            if task_logger:
+                task_logger.info('开始执行关联插件...')
+            
+            plugin_result = PluginExecutor.execute_plugins(
+                task_id=task_id,
+                task_type=task_type,
+                execution_id=execution_id,
+                task_context=task_context
+            )
+            
+            if plugin_result['total'] > 0:
+                msg = (f"插件执行完成: 总计 {plugin_result['total']} 个，"
+                       f"成功 {plugin_result['success']} 个，"
+                       f"失败 {plugin_result['failed']} 个，"
+                       f"跳过 {plugin_result['skipped']} 个")
+                if task_logger:
+                    task_logger.info(msg)
+                logger.info(f"任务 {task_id} ({task_type}) {msg}")
+            else:
+                if task_logger:
+                    task_logger.info('没有关联的插件需要执行')
+                    
+        except Exception as e:
+            error_msg = f"插件执行异常: {str(e)}"
+            if task_logger:
+                task_logger.warning(error_msg)
+            logger.error(f"任务 {task_id} ({task_type}) {error_msg}", exc_info=True)
     
     @classmethod
     def generate_schedules_manually(cls, date_str=None):

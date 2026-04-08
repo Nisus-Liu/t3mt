@@ -5,6 +5,7 @@
 import sqlite3
 import os
 from contextlib import contextmanager
+from utils.logger import logger
 
 
 class Database:
@@ -51,7 +52,7 @@ class Database:
                 )
             ''')
             
-            # 创建夸克账号表（包含member_type和member_exp_at字段）
+            # 创建夸克账号表（包含member_type、member_exp_at和cloud_type字段）
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS quark_accounts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,6 +66,7 @@ class Database:
                     used_size BIGINT,
                     is_main TINYINT DEFAULT 0,
                     status TINYINT DEFAULT 1,
+                    cloud_type VARCHAR(20) DEFAULT 'quark',
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
@@ -81,7 +83,7 @@ class Database:
                 ON quark_accounts(status)
             ''')
             
-            # 创建转存任务表（包含schedule_period字段）
+            # 创建转存任务表（包含schedule_period字段、正则替换字段和cloud_type字段）
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS transfer_tasks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,13 +105,53 @@ class Database:
                     status VARCHAR(20) DEFAULT 'running',
                     last_execute_time DATETIME,
                     next_execute_time DATETIME,
+                    regex_pattern TEXT,
+                    replacement_pattern TEXT,
+                    check_mode VARCHAR(20) DEFAULT 'replaced',
+                    cloud_type VARCHAR(20) DEFAULT 'quark',
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (target_account_id) REFERENCES quark_accounts(id)
                 )
             ''')
             
-            # 创建下载任务表（包含filter_extensions和include_extensions字段）
+            # 迁移：为已存在的transfer_tasks表添加正则替换字段
+            try:
+                cursor.execute("SELECT regex_pattern FROM transfer_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE transfer_tasks ADD COLUMN regex_pattern TEXT")
+                cursor.execute("ALTER TABLE transfer_tasks ADD COLUMN replacement_pattern TEXT")
+                cursor.execute("ALTER TABLE transfer_tasks ADD COLUMN check_mode VARCHAR(20) DEFAULT 'replaced'")
+                logger.info("transfer_tasks表已添加正则替换字段")
+            
+            # 迁移：为已存在的transfer_tasks表添加目标文件夹ID字段
+            try:
+                cursor.execute("SELECT target_folder_id FROM transfer_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE transfer_tasks ADD COLUMN target_folder_id VARCHAR(100)")
+                logger.info("transfer_tasks表已添加target_folder_id字段（用于快速定位目录）")
+            
+            # 迁移：为已存在的transfer_tasks表添加排除关键词字段
+            try:
+                cursor.execute("SELECT exclude_keywords FROM transfer_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE transfer_tasks ADD COLUMN exclude_keywords TEXT")
+                logger.info("transfer_tasks表已添加排除关键词字段")
+            
+            # 迁移：为已存在的transfer_tasks表添加最后内容更新时间字段（用于自动失效检查）
+            try:
+                cursor.execute("SELECT last_content_update_time FROM transfer_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE transfer_tasks ADD COLUMN last_content_update_time DATETIME")
+                # 为已存在的记录设置初始值为当前时间（而不是创建时间，避免立即失效）
+                cursor.execute("UPDATE transfer_tasks SET last_content_update_time = datetime('now') WHERE last_content_update_time IS NULL")
+                logger.info("transfer_tasks表已添加最后内容更新时间字段")
+            
+            # 创建下载任务表（包含filter_extensions、include_extensions、正则替换字段和cloud_type字段）
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS download_tasks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,17 +165,55 @@ class Database:
                     only_new_files TINYINT DEFAULT 1,
                     keep_structure TINYINT DEFAULT 1,
                     delete_after_download TINYINT DEFAULT 0,
+                    regex_pattern TEXT,
+                    replacement_pattern TEXT,
                     status VARCHAR(20) DEFAULT 'running',
                     progress INTEGER DEFAULT 0,
                     last_execute_time DATETIME,
                     next_execute_time DATETIME,
+                    cloud_type VARCHAR(20) DEFAULT 'quark',
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (source_account_id) REFERENCES quark_accounts(id)
                 )
             ''')
             
-            # 创建影视下载任务表（包含create_subfolder、集数选择和影视类型字段）
+            # 迁移：为已存在的download_tasks表添加正则替换字段
+            try:
+                cursor.execute("SELECT regex_pattern FROM download_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE download_tasks ADD COLUMN regex_pattern TEXT")
+                cursor.execute("ALTER TABLE download_tasks ADD COLUMN replacement_pattern TEXT")
+                logger.info("download_tasks表已添加正则替换字段")
+            
+            # 迁移：为已存在的download_tasks表添加源文件夹ID字段
+            try:
+                cursor.execute("SELECT source_folder_id FROM download_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE download_tasks ADD COLUMN source_folder_id VARCHAR(100)")
+                logger.info("download_tasks表已添加source_folder_id字段（用于快速定位目录）")
+            
+            # 迁移：为已存在的download_tasks表添加排除关键词字段
+            try:
+                cursor.execute("SELECT exclude_keywords FROM download_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE download_tasks ADD COLUMN exclude_keywords TEXT")
+                logger.info("download_tasks表已添加排除关键词字段")
+            
+            # 迁移：为已存在的download_tasks表添加最后内容更新时间字段（用于自动失效检查）
+            try:
+                cursor.execute("SELECT last_content_update_time FROM download_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE download_tasks ADD COLUMN last_content_update_time DATETIME")
+                # 为已存在的记录设置初始值为当前时间（而不是创建时间，避免立即失效）
+                cursor.execute("UPDATE download_tasks SET last_content_update_time = datetime('now') WHERE last_content_update_time IS NULL")
+                logger.info("download_tasks表已添加最后内容更新时间字段")
+            
+            # 创建影视下载任务表（包含create_subfolder、集数选择、影视类型和cloud_type字段）
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS video_tasks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -153,10 +233,57 @@ class Database:
                     last_downloaded_episode INTEGER DEFAULT 0,
                     platform VARCHAR(20) DEFAULT 'mango',
                     video_type VARCHAR(20) DEFAULT '电视剧',
+                    cloud_type VARCHAR(20) DEFAULT 'quark',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            
+            # 迁移：为已存在的video_tasks表添加正则替换字段
+            try:
+                cursor.execute("SELECT regex_pattern FROM video_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE video_tasks ADD COLUMN regex_pattern TEXT")
+                cursor.execute("ALTER TABLE video_tasks ADD COLUMN replacement_pattern TEXT")
+                logger.info("video_tasks表已添加正则替换字段")
+            
+            # 迁移：为已存在的video_tasks表添加文件大小限制字段
+            try:
+                cursor.execute("SELECT enable_file_size_check FROM video_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE video_tasks ADD COLUMN enable_file_size_check INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE video_tasks ADD COLUMN min_file_size INTEGER DEFAULT 100")
+                logger.info("video_tasks表已添加文件大小限制字段")
+            
+            # 迁移：为已存在的video_tasks表添加失败重试字段
+            try:
+                cursor.execute("SELECT enable_retry FROM video_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE video_tasks ADD COLUMN enable_retry INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE video_tasks ADD COLUMN max_retry_count INTEGER DEFAULT 3")
+                cursor.execute("ALTER TABLE video_tasks ADD COLUMN retry_interval INTEGER DEFAULT 5")
+                logger.info("video_tasks表已添加失败重试字段")
+            
+            # 迁移：为已存在的video_tasks表添加排除关键词字段
+            try:
+                cursor.execute("SELECT exclude_keywords FROM video_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE video_tasks ADD COLUMN exclude_keywords TEXT")
+                logger.info("video_tasks表已添加排除关键词字段")
+            
+            # 迁移：为已存在的video_tasks表添加最后新增剧集时间字段
+            try:
+                cursor.execute("SELECT last_episode_update_time FROM video_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，需要添加
+                cursor.execute("ALTER TABLE video_tasks ADD COLUMN last_episode_update_time DATETIME")
+                # 为已存在的记录设置初始值为当前时间（而不是创建时间，避免立即失效）
+                cursor.execute("UPDATE video_tasks SET last_episode_update_time = datetime('now') WHERE last_episode_update_time IS NULL")
+                logger.info("video_tasks表已添加最后新增剧集时间字段")
             
             # 创建任务执行历史表（包含schedule_period字段和唯一约束）
             cursor.execute('''
@@ -177,6 +304,24 @@ class Database:
                     error_message TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
+            ''')
+            
+            # 创建正则规则库表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS regex_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name VARCHAR(100) NOT NULL,
+                    regex_pattern TEXT NOT NULL,
+                    replacement_pattern TEXT NOT NULL,
+                    description TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_regex_rules_name
+                ON regex_rules(name)
             ''')
             
             # 创建唯一约束索引
@@ -270,10 +415,14 @@ class Database:
                 ('download_speed_limit', '0', 'download', '下载速度限制(MB/s)'),
                 ('download_chunk_size', '10', 'download', '分块下载大小(MB)'),
                 ('download_retry_count', '3', 'download', '下载重试次数'),
-                ('pansou_api_url', 'http://192.168.0.111:8383/', 'pansou', '盘搜API地址'),
+                ('pansou_api_url', 'http://pans.fn.22l2.com/', 'pansou', '盘搜API地址'),
                 ('video_download_default_dir', '/app/backend/downloads/官网下载', 'video_download', '影视下载默认目录'),
                 ('video_download_temp_dir', '/app/backend/downloads/temp', 'video_download', '影视下载临时目录'),
                 ('video_download_max_threads', '3', 'video_download', '视频片段下载线程数（1-10）'),
+                ('aria2_max_concurrent_tasks', '2', 'aria2', 'Aria2最大并发任务数'),
+                ('aria2_stall_timeout', '60', 'aria2', 'Aria2下载卡住超时时间（秒）'),
+                ('aria2_max_stall_retries', '5', 'aria2', 'Aria2下载卡住最大重试次数'),
+                ('video_parse_third_party_mode', '1', 'video_parse', '是否启用第三方资源解析，1=启用，0=禁用'),
             ]
             
             for key, value, type_, desc in default_configs:
@@ -284,13 +433,27 @@ class Database:
                 ''', (key, value, type_, desc))
             
             conn.commit()
-            print("✅ 数据库初始化成功")
+            logger.info("数据库初始化成功")
+            
+            # 执行数据修复脚本（修复影视任务的last_episode_update_time数据）
+            try:
+                from migrations.fix_video_task_expiration_time import upgrade as fix_expiration_time
+                fix_expiration_time()
+            except Exception as e:
+                print(f"⚠️ 数据修复脚本执行失败（可忽略）: {e}")
+            
+            # 执行迁移脚本：添加第三方解析模式配置
+            try:
+                from migrations.add_video_parse_third_party_mode import upgrade as add_third_party_mode
+                add_third_party_mode()
+            except Exception as e:
+                logger.warning(f"⚠️ 第三方解析模式配置迁移失败（可忽略）: {e}")
     
     def reset_database(self):
         """重置数据库（删除所有表）"""
         if os.path.exists(self.db_path):
             os.remove(self.db_path)
-            print("✅ 数据库已重置")
+            logger.info("数据库已重置")
         self.init_database()
 
 

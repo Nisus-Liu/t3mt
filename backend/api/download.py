@@ -14,7 +14,12 @@ download_bp = Blueprint('download', __name__, url_prefix='/api/download')
 def get_tasks():
     """获取下载任务列表"""
     try:
-        tasks = DownloadService.get_all_tasks()
+        # 获取cloud_type筛选参数
+        cloud_type = request.args.get('cloud_type')
+        
+        # 获取任务列表，支持按cloud_type筛选
+        tasks = DownloadService.get_all_tasks(cloud_type=cloud_type)
+        
         return jsonify({
             'code': 200,
             'message': 'success',
@@ -121,6 +126,7 @@ def delete_task(task_id):
     """删除下载任务"""
     try:
         from database import db
+        from tasks.scheduler import task_scheduler
         
         # 验证任务是否存在
         task = DownloadService.get_task_by_id(task_id)
@@ -129,6 +135,13 @@ def delete_task(task_id):
                 'code': 404,
                 'message': '任务不存在'
             }), 404
+        
+        # 从调度器中移除任务
+        try:
+            task_scheduler.remove_task(task_id, 'download')
+            logger.info(f"从调度器移除定时下载任务: {task_id}")
+        except Exception as e:
+            logger.warning(f"从调度器移除任务失败: {str(e)}")
         
         # 删除任务
         DownloadService.delete_task(task_id)
@@ -146,8 +159,6 @@ def delete_task(task_id):
         except Exception as e:
             logger.warning(f"删除执行历史记录失败: {str(e)}")
         
-        # TODO: 从任务调度器移除
-        
         return jsonify({
             'code': 200,
             'message': '任务删除成功'
@@ -162,7 +173,7 @@ def delete_task(task_id):
 
 @download_bp.route('/task/<int:task_id>/toggle', methods=['POST'])
 def toggle_task(task_id):
-    """暂停/启动任务"""
+    """发布/下线任务"""
     try:
         # 验证任务是否存在
         task = DownloadService.get_task_by_id(task_id)
@@ -228,6 +239,40 @@ def execute_task(task_id):
         }), 500
 
 
+@download_bp.route('/task/<int:task_id>/force-clear', methods=['POST'])
+def force_clear_task(task_id):
+    """强制清除任务状态（用于处理异常状态）"""
+    try:
+        from services.task_executor import TaskExecutor
+        
+        # 验证任务是否存在
+        task = DownloadService.get_task_by_id(task_id)
+        if not task:
+            return jsonify({
+                'code': 404,
+                'message': '任务不存在'
+            }), 404
+        
+        # 强制清除任务状态
+        if TaskExecutor.force_clear_task(task_id):
+            return jsonify({
+                'code': 200,
+                'message': '任务状态已清除，可以重新执行'
+            })
+        else:
+            return jsonify({
+                'code': 500,
+                'message': '清除任务状态失败'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"强制清除任务状态失败: {e}")
+        return jsonify({
+            'code': 500,
+            'message': f'清除失败: {str(e)}'
+        }), 500
+
+
 @download_bp.route('/task/<int:task_id>/progress', methods=['GET'])
 def get_progress(task_id):
     """获取下载进度（实时）"""
@@ -247,6 +292,12 @@ def get_progress(task_id):
         
         if task_status:
             # 任务正在执行，返回实时状态
+            # 限制日志数量，只返回最新的100条，避免前端处理大量数据卡死
+            logs = task_status.get('logs', [])
+            max_logs = 100
+            if len(logs) > max_logs:
+                logs = logs[-max_logs:]
+            
             return jsonify({
                 'code': 200,
                 'message': 'success',
@@ -259,7 +310,8 @@ def get_progress(task_id):
                     'total_files': task_status['total_files'],
                     'success_count': task_status['success_count'],
                     'fail_count': task_status['fail_count'],
-                    'logs': task_status['logs'],  # 返回所有日志
+                    'logs': logs,
+                    'logs_total': len(task_status.get('logs', [])),
                     'start_time': task_status['start_time']
                 }
             })
@@ -278,6 +330,7 @@ def get_progress(task_id):
                     'success_count': 0,
                     'fail_count': 0,
                     'logs': [],
+                    'logs_total': 0,
                     'start_time': ''
                 }
             })

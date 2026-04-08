@@ -16,8 +16,12 @@ from utils.logger import logger
 class ConfigCrypto:
     """配置加密管理器"""
     
-    # 加密配置文件路径
-    ENCRYPTED_CONFIG_PATH = 'config/encrypted_config.dat'
+    # 加密配置文件路径（使用绝对路径）
+    ENCRYPTED_CONFIG_PATH = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'config',
+        'encrypted_config.dat'
+    )
     
     def __init__(self):
         self._cipher = None
@@ -51,7 +55,6 @@ class ConfigCrypto:
             key = self._derive_key(decryption_key, salt)
             self._cipher = Fernet(key)
             self._decryption_key = decryption_key
-            logger.info("解密密钥设置成功")
             return True
         except Exception as e:
             logger.error(f"设置解密密钥失败: {e}")
@@ -111,7 +114,6 @@ class ConfigCrypto:
             self._config_cache = config_data
             self._cache_timestamp = time.time()
             
-            logger.info("配置解密成功")
             return config_data
             
         except Exception as e:
