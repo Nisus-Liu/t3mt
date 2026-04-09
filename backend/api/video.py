@@ -1082,8 +1082,9 @@ def toggle_task(task_id):
 def monkey_parse():
     """测试仿油猴子解析接口"""
     try:
-        from services.monkey.parsers import ALL_PARSERS
+        from services.monkey.parsers import ALL_PARSERS, DynamicParser
         from services.monkey.monkey_downloader import MonkeyDownloader
+        from models.config import ConfigModel
         
         data = request.get_json()
         url = data.get('url', '').strip()
@@ -1091,12 +1092,35 @@ def monkey_parse():
         if not url:
             return jsonify({'code': 400, 'message': '请输入视频地址'})
         
-        # 尝试解析
-        parsers = [p() for p in ALL_PARSERS]
-        for parser in parsers:
-            if not parser.available:
+        # 构建解析器列表：内置 + 用户配置
+        parsers = []
+        
+        # 1. 内置解析器
+        for ParserClass in ALL_PARSERS:
+            parser = ParserClass()
+            if parser.available:
+                parsers.append(parser)
+        
+        # 2. 用户配置的解析器
+        user_apis = ConfigModel.get_config_list('monkey_apis') or []
+        for api_config in user_apis:
+            api_url = api_config.get('api_url', '').strip()
+            if not api_url:
                 continue
             
+            # 检查是否已启用
+            if api_config.get('enabled') is False:
+                continue
+            
+            name = api_config.get('name', '自定义解析器')
+            parser = DynamicParser(api_url=api_url, name=name)
+            parsers.append(parser)
+        
+        logger.info(f"[Monkey] 共 {len(parsers)} 个解析器可用")
+        
+        # 尝试解析
+        for parser in parsers:
+            logger.info(f"[Monkey] 尝试解析器: {parser.name} - {parser.api_url}")
             success, result = parser.parse(url)
             if success:
                 return jsonify({
@@ -1125,10 +1149,13 @@ def monkey_download():
     """使用仿油猴子方式下载视频"""
     try:
         from services.monkey.monkey_downloader import MonkeyDownloader
+        from services.monkey.parsers import ALL_PARSERS, DynamicParser
+        from models.config import ConfigModel
         
         data = request.get_json()
         url = data.get('url', '').strip()
         output_path = data.get('output_path', '').strip()
+        concurrency = data.get('concurrency', 12)
         
         if not url:
             return jsonify({'code': 400, 'message': '请输入视频地址'})
@@ -1136,8 +1163,31 @@ def monkey_download():
         if not output_path:
             return jsonify({'code': 400, 'message': '请指定输出路径'})
         
+        # 构建解析器列表：内置 + 用户配置
+        parsers = []
+        
+        # 1. 内置解析器
+        for ParserClass in ALL_PARSERS:
+            parser = ParserClass()
+            if parser.available:
+                parsers.append(parser)
+        
+        # 2. 用户配置的解析器
+        user_apis = ConfigModel.get_config_list('monkey_apis') or []
+        for api_config in user_apis:
+            api_url = api_config.get('api_url', '').strip()
+            if not api_url:
+                continue
+            
+            if api_config.get('enabled') is False:
+                continue
+            
+            name = api_config.get('name', '自定义解析器')
+            parser = DynamicParser(api_url=api_url, name=name)
+            parsers.append(parser)
+        
         # 创建下载器并执行
-        downloader = MonkeyDownloader(concurrency=12)
+        downloader = MonkeyDownloader(parsers=parsers, concurrency=concurrency)
         success, result = downloader.download(url, output_path)
         
         if success:
