@@ -494,9 +494,9 @@ class VideoDownloadService:
         session = requests.Session()
         
         try:
-            logger.info(f"[原生下载] 开始下载m3u8视频: {file_name}")
+            logger.info(f"[T3MT] 开始下载m3u8视频: {file_name}")
             if log_callback:
-                log_callback(f"[原生下载] 开始下载m3u8视频: {file_name}")
+                log_callback(f"[T3MT] 开始下载m3u8视频: {file_name}")
             
             # 1. 准备请求头（合并传入的和默认的）
             default_headers = {
@@ -511,9 +511,9 @@ class VideoDownloadService:
             session.headers.update(default_headers)
             
             # 2. 递归解析 m3u8（支持多级）
-            logger.info(f"[原生下载] 开始解析m3u8: {m3u8_url}")
+            logger.info(f"[T3MT] 开始解析m3u8: {m3u8_url}")
             if log_callback:
-                log_callback(f"[原生下载] 开始解析m3u8播放列表")
+                log_callback(f"[T3MT] 开始解析m3u8播放列表")
             
             init_url, ts_urls, encryption_info = self._parse_m3u8_recursive(
                 m3u8_url, 
@@ -527,14 +527,14 @@ class VideoDownloadService:
                     'message': 'm3u8文件中未找到视频片段'
                 }
             
-            logger.info(f"[原生下载] 解析到 {len(ts_urls)} 个视频片段")
+            logger.info(f"[T3MT] 解析到 {len(ts_urls)} 个视频片段")
             if init_url:
                 logger.info(f"找到初始化片段")
                 if log_callback:
-                    log_callback(f"[原生下载] 解析到初始化片段和 {len(ts_urls)} 个视频片段")
+                    log_callback(f"[T3MT] 解析到初始化片段和 {len(ts_urls)} 个视频片段")
             else:
                 if log_callback:
-                    log_callback(f"[原生下载] 解析到 {len(ts_urls)} 个视频片段，开始下载...")
+                    log_callback(f"[T3MT] 解析到 {len(ts_urls)} 个视频片段，开始下载...")
             
             # 3. 创建临时目录存放ts片段
             temp_dir = save_path + '_temp'
@@ -605,9 +605,9 @@ class VideoDownloadService:
                 if log_callback:
                     log_callback(f"检测到 {skip_count} 个已下载片段，跳过下载")
             
-            logger.info(f"[原生下载] 开始下载 {len(ts_urls) - skip_count} 个视频片段（共 {len(ts_urls)} 个）")
+            logger.info(f"[T3MT] 开始下载 {len(ts_urls) - skip_count} 个视频片段（共 {len(ts_urls)} 个）")
             if log_callback:
-                log_callback(f"[原生下载] 开始下载 {len(ts_urls) - skip_count} 个视频片段")
+                log_callback(f"[T3MT] 开始下载 {len(ts_urls) - skip_count} 个视频片段")
             
             # 如果有断点续传的文件，添加到downloaded_files（但要保持init.mp4在最前面）
             if existing_files:
@@ -865,9 +865,9 @@ class VideoDownloadService:
                 }
             
             # 6. 合并fMP4片段
-            logger.info(f"[原生下载] 开始合并 {len(downloaded_files)} 个视频片段")
+            logger.info(f"[T3MT] 开始合并 {len(downloaded_files)} 个视频片段")
             if log_callback:
-                log_callback(f"[原生下载] 开始合并 {len(downloaded_files)} 个视频片段...")
+                log_callback(f"[T3MT] 开始合并 {len(downloaded_files)} 个视频片段...")
             
             # 确保目录存在
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -1131,7 +1131,7 @@ class VideoDownloadService:
                 
                 # 检查文件大小是否合理（大于1MB认为是有效文件）
                 if file_size > 1024 * 1024:
-                    logger.info(f"[原生下载] 文件已存在，跳过下载: {episode_name} ({file_size} bytes)")
+                    logger.info(f"[T3MT] 文件已存在，跳过下载: {episode_name} ({file_size} bytes)")
                     return {
                         'success': True,
                         'message': '文件已存在，跳过下载',
@@ -1149,17 +1149,17 @@ class VideoDownloadService:
                         pass
             
             # 1. 解析获取真实下载地址
-            logger.info(f"[原生下载] 开始解析剧集: {episode_name}, URL: {episode_url}")
+            logger.info(f"[T3MT] 开始解析剧集: {episode_name}, URL: {episode_url}")
             if log_callback:
-                log_callback(f"[原生下载] 正在解析: {episode_name}")
+                log_callback(f"[T3MT] 正在解析: {episode_name}")
             
             parse_result = video_parse_service.parse_episode(episode_url, episode_name)
             
             if not parse_result.get('success'):
                 error_msg = parse_result.get('message', '未知错误')
-                logger.error(f"[原生下载] 解析失败: {episode_name}, 错误: {error_msg}")
+                logger.error(f"[T3MT] 解析失败: {episode_name}, 错误: {error_msg}")
                 if log_callback:
-                    log_callback(f"✗ [原生下载] 解析失败: {episode_name} - {error_msg}")
+                    log_callback(f"✗ [T3MT] 解析失败: {episode_name} - {error_msg}")
                 return {
                     'success': False,
                     'message': f"解析失败: {error_msg}",
@@ -1180,9 +1180,9 @@ class VideoDownloadService:
                     'url': episode_url
                 }
             
-            logger.info(f"[原生下载] 解析成功，开始下载: {episode_name}")
+            logger.info(f"[T3MT] 解析成功，开始下载: {episode_name}")
             if log_callback:
-                log_callback(f"✓ [原生下载] 解析成功: {episode_name}")
+                log_callback(f"✓ [T3MT] 解析成功: {episode_name}")
             
             # 2. 下载文件
             result = self._download_file(
@@ -1549,7 +1549,7 @@ class VideoDownloadService:
         retry_exhausted_count = 0  # 重试耗尽的剧集数
         results = []
         
-        logger.info(f"[原生下载] 开始下载任务 {task_id} 的剧集，共 {total} 集")
+        logger.info(f"[T3MT] 开始下载任务 {task_id} 的剧集，共 {total} 集")
         
         # 解析排除关键词
         exclude_keyword_list = []
@@ -1816,10 +1816,10 @@ class VideoDownloadService:
             logger.error(f"清理临时目录失败: {str(e)}")
         
         # 输出统计信息
-        logger.info(f"[原生下载] 任务 {task_id} 下载完成: 成功 {success_count}/{total}, 跳过 {skipped_count}, 过滤 {filtered_count}, 失败 {failed_count}, 重试耗尽 {retry_exhausted_count}")
+        logger.info(f"[T3MT] 任务 {task_id} 下载完成: 成功 {success_count}/{total}, 跳过 {skipped_count}, 过滤 {filtered_count}, 失败 {failed_count}, 重试耗尽 {retry_exhausted_count}")
         
         if log_callback:
-            log_callback(f"[原生下载] 下载完成: 成功 {success_count}, 跳过 {skipped_count}, 过滤 {filtered_count}, 失败 {failed_count}")
+            log_callback(f"[T3MT] 下载完成: 成功 {success_count}, 跳过 {skipped_count}, 过滤 {filtered_count}, 失败 {failed_count}")
             if retry_exhausted_count > 0:
                 log_callback(f"重试耗尽: {retry_exhausted_count} 个剧集已达最大重试次数")
         
